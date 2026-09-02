@@ -60,6 +60,13 @@ jobs:
             end
           ' .vpm-listing/index.json > /dev/null
 
+      - name: Reject premature Add to VCC links
+        shell: bash
+        run: |
+          if [ "$(jq '.packages | length' .vpm-listing/index.json)" -eq 0 ]; then
+            ! grep -Fq 'wolfy527.github.io/threadlight-components/?install=1' README.md
+          fi
+
       - name: Require released manifest version in listing
         env:
           GH_TOKEN: ${{ github.token }}

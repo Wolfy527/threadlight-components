@@ -2,13 +2,13 @@
 
 Lightweight customer support components for ThreadLight prefabs.
 
+## Install
+
 <a href="https://wolfy527.github.io/threadlight-components/?install=1">
   <img src=".github/assets/add-to-vcc-button.svg" alt="Add ThreadLight Components to VCC" width="132">
 </a>
 
 VCC repository: `https://wolfy527.github.io/threadlight-components/index.json`
-
-## Install
 
 Install `ThreadLight Components` through VCC.
 
