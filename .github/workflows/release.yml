@@ -6,7 +6,7 @@ on:
       publish:
         description: Publish the validated artifacts as a GitHub release
         required: true
-        default: true
+        default: false
         type: boolean
 
 permissions:
