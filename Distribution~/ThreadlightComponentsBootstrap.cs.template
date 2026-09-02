@@ -1,0 +1,1669 @@
+namespace @@INSTALLER_NAMESPACE@@
+{
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using UnityEditor;
+using UnityEditor.PackageManager;
+using UnityEngine;
+using PackageInfo = UnityEditor.PackageManager.PackageInfo;
+
+[InitializeOnLoad]
+internal static class ThreadlightComponentsBootstrap
+{
+    private const string ManagedPackageName =
+        "com.wolfyvr.threadlight.components";
+    // Stable across product and package renames. Increment the release epoch
+    // only when a future product line intentionally restarts semantic versions.
+    private const string CompatibilityLineage =
+        "82661455-d14d-4ad0-9fc9-759d9bdb485c";
+    private const string FallbackPackageName =
+        "com.wolfyvr.threadlight.components.fallback";
+    private static readonly string[] LegacyManagedPackageNames =
+    {
+        "dev.avatar-tools.prop-components",
+        "com.wolfy527.prefab-components"
+    };
+    private const string BuilderPackageName =
+        "com.wolfyvr.threadlight.builder";
+    private const string AuthoringPackageName =
+        "com.wolfyvr.threadlight.authoring";
+    private const string ThreadlightMirroringPackageName =
+        "com.wolfyvr.threadlight.mirroring";
+    private const string UpdateWarningSessionKeyPrefix =
+        "Threadlight.Components.UpdateWarning.";
+    private const string AuthoringRetentionSessionKeyPrefix =
+        "Threadlight.Components.AuthoringExport.";
+    private const string InstallerRoot =
+        "@@INSTALLER_ROOT@@";
+    private const string InstallerPayloadGuid =
+        "@@INSTALLER_PAYLOAD_GUID@@";
+    private const string PayloadPath =
+        InstallerRoot + "/ThreadlightComponentsFallback.bytes";
+    private const string OwnershipMarkerPath =
+        InstallerRoot + "/Threadlight Components Bootstrapper.marker";
+    private const string OwnershipMarkerContents =
+        "Threadlight Components temporary export bootstrapper";
+    private const string FallbackPackagePath =
+        "Assets/Threadlight/Components/Fallback";
+    private const string LegacyScriptsPath =
+        "Assets/Wolfy_527/~ Supporting Files/Scripts";
+    private const string LegacyScriptsGuid =
+        "1a754f8d169daa9408e3740cfeeab3aa";
+    private const string LegacyPlaceholderMarkerName =
+        "Threadlight Components Migration Placeholder.txt";
+    private const string LegacyPlaceholderMarkerContents =
+        "Threadlight Components migration placeholder";
+    private const string LegacyPlaceholderScriptContents =
+        "// Threadlight Components migration placeholder. Intentionally inert.";
+    private const string LegacyGhostMaterialPath =
+        "Assets/Wolfy_527/~ Supporting Files/Ghost Material.mat";
+    private const string LegacyGhostMaterialGuid =
+        "4342400023fc9204e9fab7239dec44ef";
+    private const string LiveMirroringScriptMetaPath =
+        "Runtime/LiveMirroringSystem.cs.meta";
+    private const string LiveMirroringScriptGuid =
+        "5c54d508ba4a3ee4baa5148633885b51";
+    private const string GeneratedTargetMetadataMetaPath =
+        "Runtime/GeneratedTargetMetadata.cs.meta";
+    private const string GeneratedTargetMetadataGuid =
+        "48742d3549a555842844b99523feab8f";
+    private const string GeneratedEditorOnlyObjectMetaPath =
+        "Runtime/GeneratedEditorOnlyObject.cs.meta";
+    private const string GeneratedEditorOnlyObjectGuid =
+        "6a339ada66db0524bb16d5ed1fbe64bc";
+    private const string AuthoringOnlyComponentMetaPath =
+        "Runtime/AuthoringOnlyComponent.cs.meta";
+    private const string AuthoringOnlyComponentGuid =
+        "40218417691f9c041a2ac01d1b9d1a5c";
+    private const string GeneratedHierarchyMetadataMetaPath =
+        "Runtime/GeneratedHierarchyMetadata.cs.meta";
+    private const string GeneratedHierarchyMetadataGuid =
+        "0bc840ca6f774dfc91cc06af65dc5b45";
+    private const string PrefabIdMetaPath =
+        "Runtime/PrefabId.cs.meta";
+    private const string PrefabIdGuid =
+        "5d8f4687c2084716afeb3da11a1b050d";
+    private const string GhostMaterialMetaPath =
+        "Ghost Material.mat.meta";
+
+    private static bool running;
+    private static bool cleanupScheduled;
+    private static string bundledVersion;
+    private static int bundledReleaseEpoch;
+
+    static ThreadlightComponentsBootstrap()
+    {
+        ScheduleRun();
+    }
+
+    internal static void ScheduleRun()
+    {
+        EditorApplication.delayCall -= Run;
+        EditorApplication.delayCall += Run;
+    }
+
+    private static void Run()
+    {
+        if (running || !File.Exists(ToAbsolutePath(PayloadPath)))
+            return;
+
+        running = true;
+        try
+        {
+            bundledVersion = ReadBundledVersion(
+                ToAbsolutePath(PayloadPath), out bundledReleaseEpoch);
+
+            // Authoring projects retain the export payload, but can still clean
+            // up exact-GUID embedded script copies outside managed packages.
+            bool keepInstallerForAuthoring =
+                File.Exists(AuthoringRetentionMarkerPath()) ||
+                SessionState.GetBool(
+                    AuthoringRetentionSessionKeyPrefix + InstallerRoot, false) ||
+                IsAssemblyLoaded("Threadlight.Authoring.Editor") ||
+                IsPackageRegistered(AuthoringPackageName) ||
+                IsPackageRegistered(BuilderPackageName) ||
+                IsPackageRegistered(ThreadlightMirroringPackageName) ||
+                HasPackageManifest(
+                    "Packages/com.wolfyvr.threadlight.authoring",
+                    AuthoringPackageName,
+                    out _) ||
+                HasPackageManifest(
+                    "Packages/com.wolfyvr.threadlight.builder",
+                    BuilderPackageName,
+                    out _) ||
+                HasPackageManifest(
+                    "Packages/com.wolfyvr.threadlight.mirroring",
+                    ThreadlightMirroringPackageName,
+                    out _);
+            bool hasManagedPackage = TryGetRegisteredLineagePackage(
+                out string managedVersion, out int managedReleaseEpoch) ||
+                TryGetRegisteredPackageVersion(
+                    ManagedPackageName,
+                    out managedVersion,
+                    out managedReleaseEpoch) ||
+                TryGetRegisteredLegacyPackage(
+                    out managedVersion,
+                    out managedReleaseEpoch);
+            if (!hasManagedPackage)
+            {
+                hasManagedPackage = HasPackageManifest(
+                    "Packages/com.wolfyvr.threadlight.components",
+                    ManagedPackageName,
+                    out managedVersion,
+                    out managedReleaseEpoch);
+            }
+
+            if (hasManagedPackage)
+            {
+                List<string> managedFallbackBackups =
+                    QuarantineFallbackPackagesForManagedInstall();
+                List<LegacyFileMove> managedRelocatedScripts =
+                    MoveRelocatedOwnedScriptsFromPayload();
+                if (CompareVersions(
+                        managedVersion, managedReleaseEpoch,
+                        bundledVersion, bundledReleaseEpoch) < 0)
+                    ScheduleManagedPackageUpdateWarning(managedVersion);
+
+                Debug.Log(
+                    $"[Threadlight Components] VCC package {managedVersion} is already " +
+                    $"installed. Bundled fallback {bundledVersion} was not imported.");
+                if (managedRelocatedScripts.Count > 0)
+                {
+                    Debug.Log(
+                        $"[Threadlight Components] Moved " +
+                        $"{managedRelocatedScripts.Count} recognized embedded " +
+                        "script files into Legacy Package Backups. The VCC " +
+                        "package remains authoritative.");
+                }
+                foreach (string backupPath in managedFallbackBackups)
+                    Debug.Log(
+                        "[Threadlight Components] Moved a recognized fallback out " +
+                        "of Assets because the VCC package is authoritative:\n" +
+                        backupPath);
+                if (!keepInstallerForAuthoring)
+                    ScheduleInstallerCleanup();
+                return;
+            }
+
+            if (keepInstallerForAuthoring)
+            {
+                List<LegacyFileMove> builderRelocatedScripts =
+                    MoveRelocatedOwnedScriptsFromPayload();
+                if (builderRelocatedScripts.Count > 0)
+                {
+                    Debug.Log(
+                        $"[Threadlight Components] Moved " +
+                        $"{builderRelocatedScripts.Count} recognized embedded " +
+                        "script files into Legacy Package Backups. The export " +
+                        "bootstrapper was retained for the Builder.");
+                }
+                return;
+            }
+
+            bool fallbackPathExists = Directory.Exists(
+                ToAbsolutePath(FallbackPackagePath));
+            bool hasFallbackPackage = HasPackageManifest(
+                FallbackPackagePath,
+                FallbackPackageName,
+                out string installedVersion,
+                out int installedReleaseEpoch);
+
+            if (fallbackPathExists && !hasFallbackPackage)
+            {
+                throw new InvalidDataException(
+                    $"The reserved fallback path already exists but is not a " +
+                    $"recognized Threadlight Components fallback:\n{FallbackPackagePath}");
+            }
+
+            int installedVersionComparison = hasFallbackPackage
+                ? CompareVersions(
+                    installedVersion, installedReleaseEpoch,
+                    bundledVersion, bundledReleaseEpoch)
+                : -1;
+            bool fallbackGuidIsCompatible =
+                !hasFallbackPackage ||
+                HasCompatiblePackageGuids(FallbackPackagePath);
+
+            if (hasFallbackPackage &&
+                installedVersionComparison >= 0 &&
+                fallbackGuidIsCompatible)
+            {
+                Debug.Log(
+                    $"[Threadlight Components] Fallback {installedVersion} is already " +
+                    $"installed. Bundled fallback {bundledVersion} was skipped.");
+                ScheduleInstallerCleanup();
+                return;
+            }
+
+            if (hasFallbackPackage &&
+                installedVersionComparison > 0 &&
+                !fallbackGuidIsCompatible)
+            {
+                throw new InvalidDataException(
+                    $"Fallback {installedVersion} has incompatible compatibility " +
+                    $"GUIDs. Bundled fallback {bundledVersion} is " +
+                    "older and will not overwrite it.");
+            }
+
+            InstallFallback(installedVersion, installedReleaseEpoch);
+            ScheduleInstallerCleanup();
+        }
+        catch (Exception exception)
+        {
+            Debug.LogError(
+                "[Threadlight Components] The bundled fallback could not be installed. " +
+                "The installer files were left in the project so the operation can " +
+                "be retried.\n" + exception);
+        }
+        finally
+        {
+            running = false;
+        }
+    }
+
+    private static List<LegacyFileMove>
+        MoveRelocatedOwnedScriptsFromPayload()
+    {
+        string projectRoot = GetProjectRoot();
+        string workingRoot = Path.Combine(
+            projectRoot,
+            "Library",
+            "Threadlight",
+            "Threadlight Components Discovery",
+            Guid.NewGuid().ToString("N"));
+        string stagedPackage = Path.Combine(workingRoot, "package");
+        Directory.CreateDirectory(stagedPackage);
+        try
+        {
+            ExtractPayload(ToAbsolutePath(PayloadPath), stagedPackage);
+            return MoveRelocatedOwnedScriptsOutOfAssets(
+                projectRoot,
+                stagedPackage,
+                ToAbsolutePath(FallbackPackagePath));
+        }
+        finally
+        {
+            if (Directory.Exists(workingRoot))
+                Directory.Delete(workingRoot, true);
+        }
+    }
+
+    private static List<string> QuarantineFallbackPackagesForManagedInstall()
+    {
+        List<string> backups = new List<string>();
+        QuarantineFallbackPackageIfPresent(FallbackPackagePath, backups);
+        if (backups.Count > 0)
+            EditorApplication.delayCall += () =>
+                AssetDatabase.Refresh(ImportAssetOptions.Default);
+        return backups;
+    }
+
+    private static void QuarantineFallbackPackageIfPresent(
+        string assetPath,
+        List<string> backups)
+    {
+        string packagePath = ToAbsolutePath(assetPath);
+        if (!Directory.Exists(packagePath))
+            return;
+
+        if (!HasPackageManifest(
+                assetPath,
+                FallbackPackageName,
+                out string version) ||
+            !HasCompatiblePackageGuids(assetPath))
+        {
+            throw new InvalidDataException(
+                "A managed Threadlight Components package is installed, but a " +
+                "folder at the fallback location is not a recognized compatible " +
+                "fallback. It was left unchanged:\n" + assetPath);
+        }
+
+        string backupRoot = Path.Combine(
+            GetProjectRoot(),
+            "Library",
+            "Threadlight",
+            "Legacy Package Backups",
+            "Threadlight Components Fallback",
+            DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" +
+            Guid.NewGuid().ToString("N"));
+        string backupPackage = Path.Combine(
+            backupRoot,
+            Path.GetFileName(packagePath));
+        Directory.CreateDirectory(backupRoot);
+        Directory.Move(packagePath, backupPackage);
+
+        string packageMeta = packagePath + ".meta";
+        if (File.Exists(packageMeta))
+            File.Move(packageMeta, backupPackage + ".meta");
+
+        backups.Add($"{backupPackage} (fallback {version})");
+    }
+
+    private static void InstallFallback(
+        string installedVersion,
+        int installedReleaseEpoch)
+    {
+        string projectRoot = GetProjectRoot();
+        string workingRoot = Path.Combine(
+            projectRoot,
+            "Library",
+            "Threadlight",
+            "Threadlight Components Fallback",
+            Guid.NewGuid().ToString("N"));
+        string stagedPackage = Path.Combine(workingRoot, "package");
+        string backupPackage = Path.Combine(workingRoot, "backup");
+        string targetPackage = ToAbsolutePath(FallbackPackagePath);
+        string targetParent = Path.GetDirectoryName(targetPackage);
+        bool previousPackageMoved = false;
+        bool newPackageInstalled = false;
+        bool preserveWorkingRoot = false;
+        LegacyFolderMove legacyMove = null;
+        LegacyFileMove legacyGhostMaterialMove = null;
+        List<LegacyFileMove> relocatedScriptMoves = null;
+
+        Directory.CreateDirectory(stagedPackage);
+        try
+        {
+            ExtractPayload(ToAbsolutePath(PayloadPath), stagedPackage);
+
+            if (string.IsNullOrWhiteSpace(targetParent))
+                throw new InvalidDataException("The fallback destination is invalid.");
+            Directory.CreateDirectory(targetParent);
+
+            if (!HasPackageManifestAtAbsolutePath(
+                    stagedPackage,
+                    FallbackPackageName,
+                    out string payloadVersion,
+                    out int payloadReleaseEpoch))
+            {
+                throw new InvalidDataException(
+                    "The fallback payload does not contain the expected package.");
+            }
+
+            if (!string.Equals(
+                    payloadVersion,
+                    bundledVersion,
+                    StringComparison.Ordinal) ||
+                payloadReleaseEpoch != bundledReleaseEpoch)
+            {
+                throw new InvalidDataException(
+                    $"Fallback payload version {payloadVersion} does not match " +
+                    $"installer version {bundledVersion}.");
+            }
+
+            // Remove the known legacy source tree before the fallback package
+            // becomes visible to Unity. Both carry the same script GUIDs, so
+            // exposing them together can make Unity regenerate the package GUIDs
+            // and break existing prefab references.
+            legacyMove = MoveLegacyScriptsOutOfAssets(projectRoot);
+            legacyGhostMaterialMove = MoveLegacyGhostMaterialOutOfAssets(
+                projectRoot);
+            relocatedScriptMoves = MoveRelocatedOwnedScriptsOutOfAssets(
+                projectRoot,
+                stagedPackage,
+                targetPackage);
+
+            if (Directory.Exists(targetPackage))
+            {
+                Directory.Move(targetPackage, backupPackage);
+                previousPackageMoved = true;
+            }
+
+            Directory.Move(stagedPackage, targetPackage);
+            newPackageInstalled = true;
+
+            // Importing the fallback can reload Unity's scripting domain. Do not
+            // wait inside a synchronous refresh here: the bootstrap's call stack
+            // would be abandoned mid-transaction and Unity could leave its import
+            // progress UI open. The fallback is fully validated and moved into
+            // place, so request an asynchronous refresh and return.
+            EditorApplication.delayCall += () =>
+                AssetDatabase.Refresh(ImportAssetOptions.Default);
+
+            string action;
+            if (string.IsNullOrWhiteSpace(installedVersion))
+                action = "Installed";
+            else if (CompareVersions(
+                         installedVersion, installedReleaseEpoch,
+                         bundledVersion, bundledReleaseEpoch) == 0)
+                action = "Repaired";
+            else
+                action = $"Updated from {installedVersion} to";
+            Debug.Log(
+                $"[Threadlight Components] {action} fallback {bundledVersion}. " +
+                "Install the VCC package later for managed updates.");
+
+            if (legacyMove != null)
+            {
+                Debug.Log(
+                    "[Threadlight Components] Moved obsolete legacy scripts to:\n" +
+                    legacyMove.BackupScriptsPath);
+            }
+
+            if (legacyGhostMaterialMove != null)
+            {
+                Debug.Log(
+                    "[Threadlight Components] Moved the obsolete legacy Ghost Material " +
+                    "to:\n" + legacyGhostMaterialMove.BackupAssetPath);
+            }
+
+            if (relocatedScriptMoves != null && relocatedScriptMoves.Count > 0)
+            {
+                Debug.Log(
+                    $"[Threadlight Components] Moved {relocatedScriptMoves.Count} " +
+                    "recognized relocated script files into Legacy Package " +
+                    "Backups before installing the fallback.");
+            }
+        }
+        catch (Exception installationException)
+        {
+            Exception rollbackException = TryRollbackInstall(
+                targetPackage,
+                backupPackage,
+                newPackageInstalled,
+                previousPackageMoved,
+                legacyMove,
+                legacyGhostMaterialMove,
+                relocatedScriptMoves);
+            preserveWorkingRoot = rollbackException != null;
+
+            if (rollbackException != null)
+            {
+                throw new AggregateException(
+                    "Fallback installation failed and could not be fully rolled back. " +
+                    $"Recovery files were kept at:\n{workingRoot}",
+                    installationException,
+                    rollbackException);
+            }
+
+            throw;
+        }
+        finally
+        {
+            if (!preserveWorkingRoot && Directory.Exists(workingRoot))
+                Directory.Delete(workingRoot, true);
+        }
+    }
+
+    private static List<LegacyFileMove> MoveRelocatedOwnedScriptsOutOfAssets(
+        string projectRoot,
+        string stagedPackage,
+        string canonicalPackage)
+    {
+        HashSet<string> ownedScriptGuids = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (string metaPath in Directory.GetFiles(
+                     stagedPackage,
+                     "*.cs.meta",
+                     SearchOption.AllDirectories))
+        {
+            string guid = ReadMetaGuid(metaPath);
+            if (!string.IsNullOrWhiteSpace(guid))
+                ownedScriptGuids.Add(guid);
+        }
+
+        List<LegacyFileMove> moves = new List<LegacyFileMove>();
+        if (ownedScriptGuids.Count == 0)
+            return moves;
+
+        string assetsRoot = Path.GetFullPath(Application.dataPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        string canonicalRoot = Path.GetFullPath(canonicalPackage)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        string installerRoot = Path.GetFullPath(ToAbsolutePath(InstallerRoot))
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        string backupRoot = null;
+
+        try
+        {
+            foreach (string metaPath in Directory.GetFiles(
+                         assetsRoot,
+                         "*.cs.meta",
+                         SearchOption.AllDirectories))
+            {
+                string normalizedMeta = Path.GetFullPath(metaPath);
+                if (normalizedMeta.StartsWith(
+                        canonicalRoot,
+                        StringComparison.OrdinalIgnoreCase) ||
+                    normalizedMeta.StartsWith(
+                        installerRoot,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string guid = ReadMetaGuid(normalizedMeta);
+                if (!ownedScriptGuids.Contains(guid))
+                    continue;
+
+                string scriptPath = normalizedMeta.Substring(
+                    0,
+                    normalizedMeta.Length - ".meta".Length);
+                if (!File.Exists(scriptPath))
+                    continue;
+
+                if (backupRoot == null)
+                {
+                    backupRoot = Path.Combine(
+                        projectRoot,
+                        "Legacy Package Backups",
+                        "Threadlight Components",
+                        DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" +
+                        Guid.NewGuid().ToString("N").Substring(0, 8),
+                        "Relocated Scripts");
+                }
+
+                string relativeScript = scriptPath.Substring(assetsRoot.Length);
+                string backupScript = Path.Combine(backupRoot, relativeScript);
+                string backupMeta = backupScript + ".meta";
+                Directory.CreateDirectory(Path.GetDirectoryName(backupScript));
+                File.Move(scriptPath, backupScript);
+                File.Move(normalizedMeta, backupMeta);
+                moves.Add(new LegacyFileMove(
+                    scriptPath,
+                    normalizedMeta,
+                    backupScript,
+                    backupMeta));
+            }
+
+            return moves;
+        }
+        catch
+        {
+            for (int index = moves.Count - 1; index >= 0; index--)
+                moves[index].Restore();
+            throw;
+        }
+    }
+
+    private static LegacyFolderMove MoveLegacyScriptsOutOfAssets(
+        string projectRoot)
+    {
+        string legacyAbsolutePath = ToAbsolutePath(LegacyScriptsPath);
+        if (!Directory.Exists(legacyAbsolutePath))
+            return null;
+
+        string assetsRoot = Path.GetFullPath(Application.dataPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        string normalizedLegacyPath = Path.GetFullPath(legacyAbsolutePath);
+        if (!normalizedLegacyPath.StartsWith(
+                assetsRoot,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "The legacy Scripts path resolved outside this project's Assets " +
+                "folder and was not moved.");
+        }
+
+        string actualGuid = AssetDatabase.AssetPathToGUID(LegacyScriptsPath);
+        bool hasExpectedGuid = string.Equals(
+            actualGuid,
+            LegacyScriptsGuid,
+            StringComparison.OrdinalIgnoreCase);
+        if (!hasExpectedGuid &&
+            !HasRecognizedLegacyScriptSignatures(normalizedLegacyPath))
+        {
+            throw new InvalidDataException(
+                "A Scripts folder exists at the old Threadlight Components location, " +
+                "but it does not match the known legacy package. It was left " +
+                "unchanged for safety.");
+        }
+
+        string timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+        string backupParent = Path.Combine(
+            projectRoot,
+            "Legacy Package Backups",
+            "Threadlight Components",
+            timestamp + "-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+        string backupScriptsPath = Path.Combine(backupParent, "Scripts");
+        string legacyMetaPath = normalizedLegacyPath + ".meta";
+        string backupMetaPath = backupScriptsPath + ".meta";
+
+        Directory.CreateDirectory(backupParent);
+        bool folderMoved = false;
+        try
+        {
+            Directory.Move(normalizedLegacyPath, backupScriptsPath);
+            folderMoved = true;
+
+            if (File.Exists(legacyMetaPath))
+                File.Move(legacyMetaPath, backupMetaPath);
+
+            CreateLegacyCompilePlaceholders(
+                backupScriptsPath,
+                normalizedLegacyPath);
+
+            return new LegacyFolderMove(
+                normalizedLegacyPath,
+                legacyMetaPath,
+                backupScriptsPath,
+                backupMetaPath);
+        }
+        catch
+        {
+            if (folderMoved && Directory.Exists(backupScriptsPath))
+            {
+                if (Directory.Exists(normalizedLegacyPath))
+                    Directory.Delete(normalizedLegacyPath, true);
+
+                Directory.Move(backupScriptsPath, normalizedLegacyPath);
+            }
+
+            if (File.Exists(backupMetaPath) && !File.Exists(legacyMetaPath))
+                File.Move(backupMetaPath, legacyMetaPath);
+
+            throw;
+        }
+    }
+
+    private static void CreateLegacyCompilePlaceholders(
+        string backupScriptsPath,
+        string legacyScriptsPath)
+    {
+        string backupRoot = Path.GetFullPath(backupScriptsPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        Directory.CreateDirectory(legacyScriptsPath);
+
+        foreach (string sourcePath in Directory.GetFiles(
+                     backupScriptsPath,
+                     "*.cs",
+                     SearchOption.AllDirectories))
+        {
+            string normalizedSourcePath = Path.GetFullPath(sourcePath);
+            if (!normalizedSourcePath.StartsWith(
+                    backupRoot,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    "A legacy script resolved outside the migration backup.");
+            }
+
+            string relativePath =
+                normalizedSourcePath.Substring(backupRoot.Length);
+            string placeholderPath = Path.Combine(
+                legacyScriptsPath,
+                relativePath);
+            string placeholderParent = Path.GetDirectoryName(placeholderPath);
+            if (!string.IsNullOrWhiteSpace(placeholderParent))
+                Directory.CreateDirectory(placeholderParent);
+
+            File.WriteAllText(
+                placeholderPath,
+                LegacyPlaceholderScriptContents + Environment.NewLine);
+        }
+
+        File.WriteAllText(
+            Path.Combine(
+                legacyScriptsPath,
+                LegacyPlaceholderMarkerName),
+            LegacyPlaceholderMarkerContents + Environment.NewLine);
+    }
+
+    private static bool HasRecognizedLegacyScriptSignatures(
+        string legacyScriptsPath)
+    {
+        HashSet<string> expectedGuids = new HashSet<string>(
+            new[]
+            {
+                LiveMirroringScriptGuid,
+                GeneratedTargetMetadataGuid,
+                AuthoringOnlyComponentGuid
+            },
+            StringComparer.OrdinalIgnoreCase
+        );
+        int matches = 0;
+
+        foreach (string metaPath in Directory.GetFiles(
+                     legacyScriptsPath,
+                     "*.meta",
+                     SearchOption.AllDirectories))
+        {
+            string guid = ReadMetaGuid(metaPath);
+            if (!string.IsNullOrWhiteSpace(guid) &&
+                expectedGuids.Remove(guid))
+            {
+                matches++;
+            }
+        }
+
+        return matches >= 2;
+    }
+
+    private static LegacyFileMove MoveLegacyGhostMaterialOutOfAssets(
+        string projectRoot)
+    {
+        string legacyAssetPath = ToAbsolutePath(LegacyGhostMaterialPath);
+        if (!File.Exists(legacyAssetPath))
+            return null;
+
+        string assetsRoot = Path.GetFullPath(Application.dataPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        string normalizedAssetPath = Path.GetFullPath(legacyAssetPath);
+        if (!normalizedAssetPath.StartsWith(
+                assetsRoot,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "The legacy Ghost Material path resolved outside this project's " +
+                "Assets folder and was not moved.");
+        }
+
+        string actualGuid = AssetDatabase.AssetPathToGUID(
+            LegacyGhostMaterialPath);
+        if (!string.Equals(
+                actualGuid,
+                LegacyGhostMaterialGuid,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.LogWarning(
+                "[Threadlight Components] A Ghost Material exists at the old location, " +
+                "but it does not match the known legacy asset. It was left " +
+                "unchanged for safety.");
+            return null;
+        }
+
+        string timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+        string backupParent = Path.Combine(
+            projectRoot,
+            "Legacy Package Backups",
+            "Threadlight Components",
+            timestamp + "-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+        string backupAssetPath =
+            Path.Combine(backupParent, "Ghost Material.mat");
+        string legacyMetaPath = normalizedAssetPath + ".meta";
+        string backupMetaPath = backupAssetPath + ".meta";
+
+        Directory.CreateDirectory(backupParent);
+        bool assetMoved = false;
+        try
+        {
+            File.Move(normalizedAssetPath, backupAssetPath);
+            assetMoved = true;
+
+            if (File.Exists(legacyMetaPath))
+                File.Move(legacyMetaPath, backupMetaPath);
+
+            return new LegacyFileMove(
+                normalizedAssetPath,
+                legacyMetaPath,
+                backupAssetPath,
+                backupMetaPath);
+        }
+        catch
+        {
+            if (assetMoved &&
+                File.Exists(backupAssetPath) &&
+                !File.Exists(normalizedAssetPath))
+            {
+                Directory.CreateDirectory(
+                    Path.GetDirectoryName(normalizedAssetPath));
+                File.Move(backupAssetPath, normalizedAssetPath);
+            }
+
+            if (File.Exists(backupMetaPath) && !File.Exists(legacyMetaPath))
+                File.Move(backupMetaPath, legacyMetaPath);
+
+            throw;
+        }
+    }
+
+    private static Exception TryRollbackInstall(
+        string targetPackage,
+        string backupPackage,
+        bool newPackageInstalled,
+        bool previousPackageMoved,
+        LegacyFolderMove legacyMove,
+        LegacyFileMove legacyGhostMaterialMove,
+        List<LegacyFileMove> relocatedScriptMoves)
+    {
+        try
+        {
+            if (newPackageInstalled && Directory.Exists(targetPackage))
+                Directory.Delete(targetPackage, true);
+
+            if (previousPackageMoved && Directory.Exists(backupPackage))
+                Directory.Move(backupPackage, targetPackage);
+
+            if (legacyMove != null)
+                legacyMove.Restore();
+
+            if (legacyGhostMaterialMove != null)
+                legacyGhostMaterialMove.Restore();
+
+            if (relocatedScriptMoves != null)
+            {
+                for (int index = relocatedScriptMoves.Count - 1;
+                     index >= 0;
+                     index--)
+                {
+                    relocatedScriptMoves[index].Restore();
+                }
+            }
+
+            Client.Resolve();
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
+    private static void ExtractPayload(string payloadPath, string destination)
+    {
+        string destinationRoot = Path.GetFullPath(destination)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+
+        using (FileStream stream = File.OpenRead(payloadPath))
+        using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Read))
+        {
+            foreach (ZipArchiveEntry entry in archive.Entries)
+            {
+                string normalizedEntry = entry.FullName
+                    .Replace('\\', Path.DirectorySeparatorChar)
+                    .Replace('/', Path.DirectorySeparatorChar);
+                string destinationPath = Path.GetFullPath(
+                    Path.Combine(destinationRoot, normalizedEntry));
+
+                if (!destinationPath.StartsWith(
+                        destinationRoot,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException(
+                        $"Fallback payload contains an unsafe path: {entry.FullName}");
+                }
+
+                if (string.IsNullOrEmpty(entry.Name))
+                {
+                    Directory.CreateDirectory(destinationPath);
+                    continue;
+                }
+
+                string parent = Path.GetDirectoryName(destinationPath);
+                if (!string.IsNullOrEmpty(parent))
+                    Directory.CreateDirectory(parent);
+
+                using (Stream input = entry.Open())
+                using (FileStream output = File.Create(destinationPath))
+                    input.CopyTo(output);
+            }
+        }
+    }
+
+    private static string ReadBundledVersion(
+        string payloadPath,
+        out int releaseEpoch)
+    {
+        using (FileStream stream = File.OpenRead(payloadPath))
+        using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Read))
+        {
+            ZipArchiveEntry manifestEntry = archive.Entries.FirstOrDefault(
+                entry => string.Equals(
+                    entry.FullName.Replace('\\', '/').TrimStart(
+                        new[] { '/' }),
+                    "package.json",
+                    StringComparison.OrdinalIgnoreCase));
+            if (manifestEntry == null || manifestEntry.Length > 65536)
+            {
+                throw new InvalidDataException(
+                    "The fallback payload does not contain a valid package manifest.");
+            }
+
+            string manifestJson;
+            using (Stream input = manifestEntry.Open())
+            using (StreamReader reader = new StreamReader(input))
+                manifestJson = reader.ReadToEnd();
+
+            PackageManifest manifest =
+                JsonUtility.FromJson<PackageManifest>(manifestJson);
+            if (manifest == null ||
+                !string.Equals(
+                    manifest.name,
+                    FallbackPackageName,
+                    StringComparison.Ordinal) ||
+                !TryParseVersion(manifest.version, out _) ||
+                !TryGetReleaseEpoch(manifest, out releaseEpoch) ||
+                releaseEpoch < 1)
+            {
+                throw new InvalidDataException(
+                    "The fallback payload package manifest is invalid.");
+            }
+
+            return manifest.version;
+        }
+    }
+
+    private static bool IsPackageRegistered(string packageName)
+    {
+        PackageInfo[] packages = PackageInfo.GetAllRegisteredPackages();
+        if (packages == null)
+            return false;
+
+        foreach (PackageInfo package in packages)
+        {
+            if (package != null &&
+                string.Equals(
+                    package.name,
+                    packageName,
+                    StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryGetRegisteredPackageVersion(
+        string packageName,
+        out string version,
+        out int releaseEpoch)
+    {
+        version = null;
+        releaseEpoch = 0;
+        PackageInfo[] packages = PackageInfo.GetAllRegisteredPackages();
+        if (packages == null)
+            return false;
+
+        foreach (PackageInfo package in packages)
+        {
+            if (package == null ||
+                !string.Equals(
+                    package.name,
+                    packageName,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            version = package.version;
+            if (!string.IsNullOrWhiteSpace(package.resolvedPath) &&
+                TryReadPackageManifest(
+                    package.resolvedPath, out PackageManifest manifest) &&
+                !TryGetReleaseEpoch(manifest, out releaseEpoch))
+            {
+                return false;
+            }
+            return !string.IsNullOrWhiteSpace(version);
+        }
+
+        return false;
+    }
+
+    private static void ScheduleManagedPackageUpdateWarning(
+        string installedVersion)
+    {
+        string sessionKey = UpdateWarningSessionKeyPrefix + bundledVersion;
+        if (SessionState.GetBool(sessionKey, false))
+            return;
+
+        SessionState.SetBool(sessionKey, true);
+        Debug.LogWarning(
+            $"[Threadlight Components] An imported asset requires Threadlight Components " +
+            $"{bundledVersion} or newer, but VCC package {installedVersion} is " +
+            "installed. Update Threadlight Components through VCC.");
+
+        EditorApplication.delayCall += () =>
+            EditorUtility.DisplayDialog(
+                "Threadlight Components Update Required",
+                "An imported asset requires a newer Threadlight Components package." +
+                $"\n\nInstalled VCC version: {installedVersion}" +
+                $"\nRequired version: {bundledVersion} or newer" +
+                "\n\nUpdate " +
+                "Threadlight Components through VCC before using this asset.",
+                "OK");
+    }
+
+    private static bool HasPackageManifest(
+        string assetPath,
+        string expectedName,
+        out string version)
+    {
+        return HasPackageManifest(
+            assetPath, expectedName, out version, out _);
+    }
+
+    private static bool HasPackageManifest(
+        string assetPath,
+        string expectedName,
+        out string version,
+        out int releaseEpoch)
+    {
+        return HasPackageManifestAtAbsolutePath(
+            ToAbsolutePath(assetPath),
+            expectedName,
+            out version,
+            out releaseEpoch);
+    }
+
+    private static bool HasPackageManifestAtAbsolutePath(
+        string packagePath,
+        string expectedName,
+        out string version)
+    {
+        return HasPackageManifestAtAbsolutePath(
+            packagePath, expectedName, out version, out _);
+    }
+
+    private static bool HasPackageManifestAtAbsolutePath(
+        string packagePath,
+        string expectedName,
+        out string version,
+        out int releaseEpoch)
+    {
+        version = null;
+        releaseEpoch = 0;
+        if (!TryReadPackageManifest(packagePath, out PackageManifest manifest))
+            return false;
+        if (manifest == null ||
+            !string.Equals(
+                manifest.name,
+                expectedName,
+                StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(manifest.version) ||
+            !TryGetReleaseEpoch(manifest, out releaseEpoch))
+        {
+            return false;
+        }
+
+        version = manifest.version;
+        return true;
+    }
+
+    private static bool TryReadPackageManifest(
+        string packagePath,
+        out PackageManifest manifest)
+    {
+        manifest = null;
+        string manifestPath = Path.Combine(packagePath, "package.json");
+        if (!File.Exists(manifestPath))
+            return false;
+        manifest = JsonUtility.FromJson<PackageManifest>(
+            File.ReadAllText(manifestPath));
+        return manifest != null;
+    }
+
+    private static bool TryGetReleaseEpoch(
+        PackageManifest manifest,
+        out int releaseEpoch)
+    {
+        releaseEpoch = manifest?.compatibilityReleaseEpoch ?? 0;
+        if (releaseEpoch < 0)
+            return false;
+        if (releaseEpoch == 0)
+            return string.IsNullOrWhiteSpace(manifest.compatibilityLineage);
+        return string.Equals(
+            manifest.compatibilityLineage,
+            CompatibilityLineage,
+            StringComparison.Ordinal);
+    }
+
+    private static bool HasCompatiblePackageGuids(string packageAssetPath)
+    {
+        return
+            HasExpectedAssetGuid(
+                packageAssetPath,
+                LiveMirroringScriptMetaPath,
+                LiveMirroringScriptGuid) &&
+            HasExpectedAssetGuid(
+                packageAssetPath,
+                GeneratedTargetMetadataMetaPath,
+                GeneratedTargetMetadataGuid) &&
+            HasExpectedAssetGuid(
+                packageAssetPath,
+                GeneratedEditorOnlyObjectMetaPath,
+                GeneratedEditorOnlyObjectGuid) &&
+            HasExpectedAssetGuid(
+                packageAssetPath,
+                AuthoringOnlyComponentMetaPath,
+                AuthoringOnlyComponentGuid) &&
+            HasExpectedAssetGuid(
+                packageAssetPath,
+                GeneratedHierarchyMetadataMetaPath,
+                GeneratedHierarchyMetadataGuid) &&
+            HasExpectedAssetGuid(
+                packageAssetPath,
+                PrefabIdMetaPath,
+                PrefabIdGuid) &&
+            HasExpectedAssetGuid(
+                packageAssetPath,
+                GhostMaterialMetaPath,
+                LegacyGhostMaterialGuid);
+    }
+
+    private static bool HasExpectedAssetGuid(
+        string packageAssetPath,
+        string relativeMetaPath,
+        string expectedGuid)
+    {
+        string metaPath = Path.Combine(
+            ToAbsolutePath(packageAssetPath),
+            relativeMetaPath.Replace(
+                '/',
+                Path.DirectorySeparatorChar));
+        if (!File.Exists(metaPath))
+            return false;
+
+        foreach (string line in File.ReadAllLines(metaPath))
+        {
+            string trimmed = line.Trim();
+            if (!trimmed.StartsWith(
+                    "guid:",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string guid = trimmed.Substring("guid:".Length).Trim();
+            return string.Equals(
+                guid,
+                expectedGuid,
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
+    }
+
+    private static int CompareVersions(
+        string left,
+        int leftReleaseEpoch,
+        string right,
+        int rightReleaseEpoch)
+    {
+        int epochComparison = leftReleaseEpoch.CompareTo(rightReleaseEpoch);
+        if (epochComparison != 0)
+            return epochComparison;
+
+        if (!TryParseVersion(left, out SemanticVersion leftVersion) ||
+            !TryParseVersion(right, out SemanticVersion rightVersion))
+        {
+            throw new InvalidDataException(
+                $"Cannot compare Threadlight Components versions '{left}' and '{right}'.");
+        }
+
+        int coreComparison = leftVersion.Core.CompareTo(rightVersion.Core);
+        if (coreComparison != 0)
+            return coreComparison;
+
+        return ComparePrerelease(
+            leftVersion.Prerelease,
+            rightVersion.Prerelease);
+    }
+
+    private static bool IsAssemblyLoaded(string assemblyName)
+    {
+        foreach (System.Reflection.Assembly assembly in
+                 AppDomain.CurrentDomain.GetAssemblies())
+        {
+            if (string.Equals(assembly.GetName().Name, assemblyName,
+                    StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetRegisteredLegacyPackage(
+        out string version,
+        out int releaseEpoch)
+    {
+        version = null;
+        releaseEpoch = 0;
+        foreach (string packageName in LegacyManagedPackageNames)
+        {
+            if (!TryGetRegisteredPackageVersion(
+                    packageName, out string candidateVersion,
+                    out int candidateEpoch))
+            {
+                continue;
+            }
+
+            // Exact historical package names are the only unmarked packages
+            // allowed into epoch zero. They remain managed and authoritative.
+            candidateEpoch = 0;
+            if (version == null || CompareVersions(
+                    candidateVersion, candidateEpoch,
+                    version, releaseEpoch) > 0)
+            {
+                version = candidateVersion;
+                releaseEpoch = candidateEpoch;
+            }
+        }
+        return version != null;
+    }
+
+    private static bool TryGetRegisteredLineagePackage(
+        out string version,
+        out int releaseEpoch)
+    {
+        version = null;
+        releaseEpoch = 0;
+        PackageInfo[] packages = PackageInfo.GetAllRegisteredPackages();
+        if (packages == null)
+            return false;
+
+        int matches = 0;
+        foreach (PackageInfo package in packages)
+        {
+            if (package == null ||
+                string.IsNullOrWhiteSpace(package.resolvedPath) ||
+                !TryReadPackageManifest(
+                    package.resolvedPath, out PackageManifest manifest) ||
+                !string.Equals(
+                    manifest.compatibilityLineage,
+                    CompatibilityLineage,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            matches++;
+            if (!TryGetReleaseEpoch(manifest, out int candidateEpoch) ||
+                candidateEpoch < 1 ||
+                !TryParseVersion(package.version, out _))
+            {
+                throw new InvalidDataException(
+                    "A registered package claims the Components compatibility " +
+                    "lineage but has an invalid release identity: " +
+                    package.resolvedPath);
+            }
+
+            if (version == null || CompareVersions(
+                    package.version, candidateEpoch,
+                    version, releaseEpoch) > 0)
+            {
+                version = package.version;
+                releaseEpoch = candidateEpoch;
+            }
+        }
+
+        if (matches > 1)
+            Debug.LogWarning(
+                "[Threadlight Components] Multiple registered packages claim " +
+                "the same compatibility lineage. No fallback will be installed.");
+
+        return version != null;
+    }
+
+    private static string AuthoringRetentionMarkerPath()
+    {
+        string token;
+        using (SHA256 algorithm = SHA256.Create())
+        {
+            byte[] hash = algorithm.ComputeHash(Encoding.UTF8.GetBytes(InstallerRoot));
+            StringBuilder output = new StringBuilder(hash.Length * 2);
+            foreach (byte value in hash)
+                output.Append(value.ToString("x2"));
+            token = output.ToString();
+        }
+        return Path.Combine(Directory.GetParent(Application.dataPath).FullName,
+            "Library", "Threadlight", "Authoring Bootstrap Retention",
+            token + ".marker");
+    }
+
+    private static bool TryParseVersion(
+        string value,
+        out SemanticVersion version)
+    {
+        version = null;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        string input = value.Trim();
+        int buildIndex = input.IndexOf('+');
+        if (buildIndex >= 0)
+        {
+            if (!AreValidIdentifiers(input.Substring(buildIndex + 1), false))
+                return false;
+            input = input.Substring(0, buildIndex);
+        }
+
+        string prerelease = null;
+        int prereleaseIndex = input.IndexOf('-');
+        if (prereleaseIndex >= 0)
+        {
+            prerelease = input.Substring(prereleaseIndex + 1);
+            input = input.Substring(0, prereleaseIndex);
+            if (!AreValidIdentifiers(prerelease, true))
+                return false;
+        }
+
+        string[] parts = input.Split(new[] { '.' });
+        if (parts.Length != 3 ||
+            HasLeadingZero(parts[0]) ||
+            HasLeadingZero(parts[1]) ||
+            HasLeadingZero(parts[2]) ||
+            !int.TryParse(parts[0], out int major) ||
+            !int.TryParse(parts[1], out int minor) ||
+            !int.TryParse(parts[2], out int patch) ||
+            major < 0 ||
+            minor < 0 ||
+            patch < 0)
+        {
+            return false;
+        }
+
+        version = new SemanticVersion(
+            new Version(major, minor, patch),
+            prerelease == null
+                ? Array.Empty<string>()
+                : prerelease.Split(
+                    new[] { '.' }, StringSplitOptions.None));
+        return true;
+    }
+
+    private static int ComparePrerelease(string[] left, string[] right)
+    {
+        bool leftStable = left.Length == 0;
+        bool rightStable = right.Length == 0;
+        if (leftStable || rightStable)
+            return leftStable == rightStable ? 0 : leftStable ? 1 : -1;
+
+        int count = Math.Min(left.Length, right.Length);
+        for (int index = 0; index < count; index++)
+        {
+            string leftPart = left[index];
+            string rightPart = right[index];
+            bool leftNumeric = IsNumeric(leftPart);
+            bool rightNumeric = IsNumeric(rightPart);
+            int comparison;
+            if (leftNumeric && rightNumeric)
+            {
+                comparison = leftPart.Length != rightPart.Length
+                    ? leftPart.Length.CompareTo(rightPart.Length)
+                    : string.CompareOrdinal(leftPart, rightPart);
+            }
+            else if (leftNumeric != rightNumeric)
+            {
+                comparison = leftNumeric ? -1 : 1;
+            }
+            else
+            {
+                comparison = string.CompareOrdinal(leftPart, rightPart);
+            }
+
+            if (comparison != 0)
+                return comparison;
+        }
+
+        return left.Length.CompareTo(right.Length);
+    }
+
+    private static bool AreValidIdentifiers(
+        string value,
+        bool rejectNumericLeadingZeros)
+    {
+        if (string.IsNullOrEmpty(value))
+            return false;
+
+        string[] identifiers = value.Split(
+            new[] { '.' }, StringSplitOptions.None);
+        for (int index = 0; index < identifiers.Length; index++)
+        {
+            string identifier = identifiers[index];
+            if (string.IsNullOrEmpty(identifier) ||
+                (rejectNumericLeadingZeros && IsNumeric(identifier) &&
+                 HasLeadingZero(identifier)))
+            {
+                return false;
+            }
+
+            for (int characterIndex = 0;
+                 characterIndex < identifier.Length;
+                 characterIndex++)
+            {
+                char character = identifier[characterIndex];
+                bool asciiLetter =
+                    (character >= 'A' && character <= 'Z') ||
+                    (character >= 'a' && character <= 'z');
+                bool asciiDigit = character >= '0' && character <= '9';
+                if (!asciiLetter && !asciiDigit && character != '-')
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsNumeric(string value)
+    {
+        for (int index = 0; index < value.Length; index++)
+        {
+            if (value[index] < '0' || value[index] > '9')
+                return false;
+        }
+
+        return value.Length > 0;
+    }
+
+    private static bool HasLeadingZero(string value) =>
+        value.Length > 1 && value[0] == '0';
+
+    private sealed class SemanticVersion
+    {
+        public SemanticVersion(Version core, string[] prerelease)
+        {
+            Core = core;
+            Prerelease = prerelease;
+        }
+
+        public Version Core { get; }
+        public string[] Prerelease { get; }
+    }
+
+    private static void ScheduleInstallerCleanup()
+    {
+        if (cleanupScheduled)
+            return;
+
+        cleanupScheduled = true;
+        EditorApplication.delayCall += CleanupInstallerPayload;
+    }
+
+    private static void CleanupInstallerPayload()
+    {
+        EditorApplication.delayCall -= CleanupInstallerPayload;
+        cleanupScheduled = false;
+
+        try
+        {
+            if (string.Equals(
+                    AssetDatabase.AssetPathToGUID(PayloadPath),
+                    InstallerPayloadGuid,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                string ownershipMarkerPath =
+                    ToAbsolutePath(OwnershipMarkerPath);
+                if (File.Exists(ownershipMarkerPath) &&
+                    string.Equals(
+                        File.ReadAllText(ownershipMarkerPath).Trim(),
+                        OwnershipMarkerContents,
+                        StringComparison.Ordinal))
+                {
+                    AssetDatabase.DeleteAsset(InstallerRoot);
+                }
+                else
+                {
+                    AssetDatabase.DeleteAsset(PayloadPath);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning(
+                "[Threadlight Components] The temporary fallback payload could not " +
+                "be removed. It is safe to leave in place.\n" + exception);
+        }
+    }
+
+    private static string ReadMetaGuid(string metaPath)
+    {
+        if (!File.Exists(metaPath))
+            return string.Empty;
+
+        foreach (string line in File.ReadLines(metaPath))
+        {
+            string trimmed = line.Trim();
+            if (trimmed.StartsWith(
+                    "guid:",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return trimmed.Substring("guid:".Length).Trim();
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string ToAbsolutePath(string projectRelativePath)
+    {
+        return Path.GetFullPath(
+            Path.Combine(GetProjectRoot(), projectRelativePath));
+    }
+
+    private static string GetProjectRoot()
+    {
+        DirectoryInfo parent = Directory.GetParent(Application.dataPath);
+        if (parent == null)
+            throw new DirectoryNotFoundException(
+                "Could not locate the Unity project root.");
+
+        return parent.FullName;
+    }
+
+    [Serializable]
+    private sealed class PackageManifest
+    {
+        public string name;
+        public string version;
+        public string compatibilityLineage;
+        public int compatibilityReleaseEpoch;
+    }
+
+    private sealed class LegacyFolderMove
+    {
+        public LegacyFolderMove(
+            string legacyScriptsPath,
+            string legacyMetaPath,
+            string backupScriptsPath,
+            string backupMetaPath)
+        {
+            LegacyScriptsPath = legacyScriptsPath;
+            LegacyMetaPath = legacyMetaPath;
+            BackupScriptsPath = backupScriptsPath;
+            BackupMetaPath = backupMetaPath;
+        }
+
+        public string LegacyScriptsPath { get; }
+        public string LegacyMetaPath { get; }
+        public string BackupScriptsPath { get; }
+        public string BackupMetaPath { get; }
+
+        public void Restore()
+        {
+            if (Directory.Exists(LegacyScriptsPath))
+                Directory.Delete(LegacyScriptsPath, true);
+
+            if (File.Exists(LegacyMetaPath))
+                File.Delete(LegacyMetaPath);
+
+            if (Directory.Exists(BackupScriptsPath) &&
+                !Directory.Exists(LegacyScriptsPath))
+            {
+                Directory.CreateDirectory(
+                    Path.GetDirectoryName(LegacyScriptsPath));
+                Directory.Move(BackupScriptsPath, LegacyScriptsPath);
+            }
+
+            if (File.Exists(BackupMetaPath) &&
+                !File.Exists(LegacyMetaPath))
+            {
+                File.Move(BackupMetaPath, LegacyMetaPath);
+            }
+        }
+    }
+
+    private sealed class LegacyFileMove
+    {
+        public LegacyFileMove(
+            string legacyAssetPath,
+            string legacyMetaPath,
+            string backupAssetPath,
+            string backupMetaPath)
+        {
+            LegacyAssetPath = legacyAssetPath;
+            LegacyMetaPath = legacyMetaPath;
+            BackupAssetPath = backupAssetPath;
+            BackupMetaPath = backupMetaPath;
+        }
+
+        public string LegacyAssetPath { get; }
+        public string LegacyMetaPath { get; }
+        public string BackupAssetPath { get; }
+        public string BackupMetaPath { get; }
+
+        public void Restore()
+        {
+            if (File.Exists(LegacyAssetPath))
+                File.Delete(LegacyAssetPath);
+
+            if (File.Exists(LegacyMetaPath))
+                File.Delete(LegacyMetaPath);
+
+            if (File.Exists(BackupAssetPath))
+            {
+                Directory.CreateDirectory(
+                    Path.GetDirectoryName(LegacyAssetPath));
+                File.Move(BackupAssetPath, LegacyAssetPath);
+            }
+
+            if (File.Exists(BackupMetaPath))
+                File.Move(BackupMetaPath, LegacyMetaPath);
+        }
+    }
+}
+
+internal sealed class ThreadlightComponentsInstallerAssetPostprocessor :
+    AssetPostprocessor
+{
+    private const string PayloadPath =
+        "@@INSTALLER_ROOT@@/" +
+        "ThreadlightComponentsFallback.bytes";
+
+    private static void OnPostprocessAllAssets(
+        string[] importedAssets,
+        string[] deletedAssets,
+        string[] movedAssets,
+        string[] movedFromAssetPaths)
+    {
+        if (importedAssets == null)
+            return;
+
+        foreach (string importedAsset in importedAssets)
+        {
+            if (!string.Equals(
+                    importedAsset,
+                    PayloadPath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            ThreadlightComponentsBootstrap.ScheduleRun();
+            return;
+        }
+    }
+}
+}

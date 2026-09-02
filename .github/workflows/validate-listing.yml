@@ -1,0 +1,96 @@
+name: Validate VPM Listing
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate listing JSON
+        shell: bash
+        run: |
+          jq -e . .vpm-listing/source.json > /dev/null
+          jq -e . .vpm-listing/index.json > /dev/null
+
+      - name: Validate customer-only package entry
+        shell: bash
+        run: |
+          jq -e '
+            .name == "ThreadLight Components" and
+            .id == "com.wolfyvr.threadlight.components.listing" and
+            .author == "WolfyVR" and
+            (.author | type) == "string" and
+            .url == "https://wolfy527.github.io/threadlight-components/index.json" and
+            .packages["dev.avatar-tools.prop-builder"] == null and
+            .packages["com.wolfyvr.threadlight.builder"] == null and
+            ((.packages | keys) - ["com.wolfyvr.threadlight.components"] | length) == 0 and
+            if .packages["com.wolfyvr.threadlight.components"] == null then
+              true
+            else
+              .packages["com.wolfyvr.threadlight.components"].versions as $versions |
+              ($versions | length) >= 1 and
+              all($versions | to_entries[];
+              . as $entry |
+              $entry.key == $entry.value.version and
+              $entry.value.name == "com.wolfyvr.threadlight.components" and
+              $entry.value.displayName == "ThreadLight Components" and
+              ($entry.value.author | type) == "object" and
+              ($entry.value.author.name | type) == "string" and
+              ($entry.value.author.email | type) == "string" and
+              ($entry.value.vpmDependencies | type) == "object" and
+              ($entry.value.vpmDependencies["com.vrchat.avatars"] | type) == "string" and
+              $entry.value.license == "LicenseRef-Threadlight-Proprietary" and
+              ($entry.value.licensesUrl | endswith("/LICENSE.md")) and
+              $entry.value.legacyFolders["Assets\\Wolfy_527\\~ Supporting Files\\Scripts"] == "1a754f8d169daa9408e3740cfeeab3aa" and
+              $entry.value.legacyFiles["Assets\\Wolfy_527\\~ Supporting Files\\Ghost Material.mat"] == "4342400023fc9204e9fab7239dec44ef" and
+              ($entry.value.legacyPackages | index("dev.avatar-tools.prop-components")) != null and
+              ($entry.value.legacyPackages | index("com.wolfyvr.threadlight.components.fallback")) != null and
+              ($entry.value.url | contains("/v" + $entry.key + "/")) and
+              ($entry.value.url | endswith(".zip")) and
+              ($entry.value.zipSHA256 | test("^[0-9a-f]{64}$")))
+            end
+          ' .vpm-listing/index.json > /dev/null
+
+      - name: Require released manifest version in listing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          current_version="$(jq -r '.version' package.json)"
+          if gh release view "v$current_version" >/dev/null 2>&1; then
+            jq -e --arg version "$current_version" '
+              .packages["com.wolfyvr.threadlight.components"]
+                .versions[$version].version == $version
+            ' .vpm-listing/index.json > /dev/null
+          else
+            echo "v$current_version is not released yet; listing publication is pending."
+          fi
+
+      - name: Verify published package artifact
+        shell: bash
+        run: |
+          jq -r '
+            (.packages["com.wolfyvr.threadlight.components"]?.versions // {}) |
+            to_entries[] |
+            [.key, .value.url, .value.zipSHA256] |
+            @tsv
+          ' .vpm-listing/index.json |
+          while IFS=$'\t' read -r version package_url expected_sha; do
+            archive="package-$version.zip"
+            curl --fail --location --silent --show-error "$package_url" --output "$archive"
+            echo "$expected_sha  $archive" | sha256sum --check -
+            unzip -p "$archive" package.json | jq -e --arg version "$version" '
+              .name == "com.wolfyvr.threadlight.components" and
+              .displayName == "ThreadLight Components" and
+              .version == $version
+            ' > /dev/null
+          done

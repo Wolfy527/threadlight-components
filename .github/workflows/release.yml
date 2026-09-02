@@ -1,0 +1,92 @@
+name: Build Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the validated artifacts as a GitHub release
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out package
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate manifest and Unity metadata
+        shell: pwsh
+        run: ./.github/scripts/validate-package.ps1 -PackageRoot . -ExpectedName "com.wolfyvr.threadlight.components"
+
+      - name: Verify fallback authority and migration matrix
+        shell: pwsh
+        run: ./.github/scripts/test-fallback-bootstrap.ps1 -PackageRoot .
+
+      - name: Reject reused release identity
+        shell: pwsh
+        run: ./.github/scripts/validate-release.ps1 -PackageRoot .
+
+      - name: Read package metadata
+        id: package
+        shell: bash
+        run: |
+          echo "name=$(jq -r '.name' package.json)" >> "$GITHUB_OUTPUT"
+          echo "display_name=$(jq -r '.displayName' package.json)" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r '.version' package.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Build VPM archive
+        id: archive
+        shell: bash
+        run: |
+          archive="${{ steps.package.outputs.name }}-${{ steps.package.outputs.version }}.zip"
+          archive_path="$RUNNER_TEMP/$archive"
+          zip -r "$archive_path" . \
+            -x ".git/*" ".github/*" ".vpm-listing/*" ".gitignore" ".gitattributes"
+          (cd "$(dirname "$archive_path")" && sha256sum "$archive") > "$archive_path.sha256"
+          echo "path=$archive_path" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$archive_path.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Verify VPM archive
+        shell: bash
+        run: |
+          archive_path="${{ steps.archive.outputs.path }}"
+          (cd "$(dirname "$archive_path")" && sha256sum --check "$(basename "${{ steps.archive.outputs.checksum_path }}")")
+          unzip -p "${{ steps.archive.outputs.path }}" package.json | jq -e '
+            .name == "com.wolfyvr.threadlight.components" and
+            .displayName == "ThreadLight Components" and
+            .version == "${{ steps.package.outputs.version }}"
+          ' > /dev/null
+
+      - name: Build fallback installer
+        shell: pwsh
+        run: |
+          ./.github/scripts/build-fallback-installer.ps1 `
+            -PackageRoot . `
+            -OutputDirectory "${{ runner.temp }}/fallback"
+
+      - name: Create GitHub release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="v${{ steps.package.outputs.version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists. Increment package.json before publishing again."
+            exit 1
+          fi
+          gh release create "$tag" \
+            "${{ steps.archive.outputs.path }}" \
+            "${{ steps.archive.outputs.checksum_path }}" \
+            "${{ runner.temp }}/fallback/Threadlight-Components-${{ steps.package.outputs.version }}.unitypackage" \
+            package.json \
+            --target "$GITHUB_SHA" \
+            --title "${{ steps.package.outputs.display_name }} ${{ steps.package.outputs.version }}" \
+            --notes-file CHANGELOG.md

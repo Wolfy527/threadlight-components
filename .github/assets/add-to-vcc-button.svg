@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="132" height="50" viewBox="0 0 132 50" role="img" aria-labelledby="title description">
+  <title id="title">Add ThreadLight Components to VCC</title>
+  <desc id="description">A clean orange and charcoal Add to VCC button.</desc>
+  <defs>
+    <linearGradient id="action" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#9e400f"/>
+      <stop offset="1" stop-color="#2e170d"/>
+    </linearGradient>
+    <filter id="shadow" x="-14%" y="-38%" width="128%" height="190%">
+      <feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#000000" flood-opacity=".3"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <rect x="2" y="2" width="128" height="46" rx="8" fill="url(#action)" stroke="#ff942e" stroke-opacity=".72"/>
+    <path d="M10 3h112" stroke="#ffffff" stroke-opacity=".06" stroke-linecap="round"/>
+  </g>
+  <text x="66" y="31" fill="#fbf2e3" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" text-anchor="middle">Add to VCC</text>
+</svg>

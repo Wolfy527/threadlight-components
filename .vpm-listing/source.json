@@ -1,0 +1,15 @@
+{
+  "name": "ThreadLight Components",
+  "id": "com.wolfyvr.threadlight.components.listing",
+  "url": "https://wolfy527.github.io/threadlight-components/index.json",
+  "author": "WolfyVR",
+  "description": "Lightweight customer support components for ThreadLight prefabs.",
+  "infoLink": {
+    "url": "https://github.com/Wolfy527/threadlight-components",
+    "text": "View package information"
+  },
+  "githubRepos": [
+    "Wolfy527/threadlight-components"
+  ],
+  "packages": []
+}
