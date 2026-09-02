@@ -181,12 +181,12 @@ if ($ExpectedName -eq "com.wolfyvr.threadlight.components") {
             $_.FullName -notmatch '[\\/]\.git[\\/]' -and
             $_.FullName -notmatch '[\\/]\.github[\\/]'
         }
-    $allowedEditorSource = "Editor\LegacyScriptsFolderMigration.cs"
+    $allowedEditorSource = "Editor/LegacyScriptsFolderMigration.cs"
     $componentSources | ForEach-Object {
-        $relative = Get-PackageRelativePath `
-            -BasePath $root -FullPath $_.FullName
+        $relative = (Get-PackageRelativePath `
+            -BasePath $root -FullPath $_.FullName).Replace('\', '/')
         if (-not $relative.StartsWith(
-                "Runtime\", [StringComparison]::Ordinal) -and
+                "Runtime/", [StringComparison]::Ordinal) -and
             $relative -ne $allowedEditorSource) {
             $errors.Add(
                 "Customer package source is outside Runtime or the legacy migration editor: '$relative'."
