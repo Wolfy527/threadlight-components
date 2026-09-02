@@ -156,14 +156,21 @@ namespace UnityEditor
         public static bool isUpdating => false;
     }
 
+    [Flags]
     public enum ImportAssetOptions
     {
         Default = 0,
+        ForceUpdate = 1,
         ForceSynchronousImport = 8
     }
 
     public static class AssetDatabase
     {
+        public static Action<string[]> onImportPackageItemsCompleted;
+        public static event Action<string> importPackageStarted;
+        public static event Action<string> importPackageCompleted;
+        public static event Action<string> importPackageCancelled;
+        public static event Action<string, string> importPackageFailed;
         public static readonly Dictionary<string, string> Guids =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public static readonly List<string> DeletedAssets =
@@ -177,6 +184,9 @@ namespace UnityEditor
             return true;
         }
         public static void Refresh(ImportAssetOptions options) {}
+        public static void ImportAsset(
+            string path,
+            ImportAssetOptions options) {}
     }
 
     public static class EditorUtility
@@ -205,9 +215,13 @@ namespace UnityEditor.PackageManager
         public string name;
         public string version;
         public string resolvedPath;
+        public string assetPath;
         public static PackageInfo[] RegisteredPackages = new PackageInfo[0];
         public static PackageInfo[] GetAllRegisteredPackages() =>
             RegisteredPackages;
+        public static PackageInfo FindForAssembly(
+            System.Reflection.Assembly assembly) =>
+            RegisteredPackages.Length > 0 ? RegisteredPackages[0] : null;
     }
 
     public static class Client
@@ -331,6 +345,250 @@ namespace UnityEditor.PackageManager
     New-Item -ItemType Directory -Path $lightweightBuilder -Force | Out-Null
     if (-not (& $invoke $matrixProject)) {
         throw "Fallback payload was not preserved for Threadlight Mirroring."
+    }
+
+    $handleImportedAssets = $migrationType.GetMethod(
+        "HandleImportedAssets",
+        [System.Reflection.BindingFlags]::NonPublic -bor
+            [System.Reflection.BindingFlags]::Static
+    )
+    if ($null -eq $handleImportedAssets) {
+        throw "Could not locate the legacy import migration entry point."
+    }
+    $handlePackageImportStarted = $migrationType.GetMethod(
+        "HandlePackageImportStarted",
+        [System.Reflection.BindingFlags]::NonPublic -bor
+            [System.Reflection.BindingFlags]::Static
+    )
+    $handlePackageImportItemsCompleted = $migrationType.GetMethod(
+        "HandlePackageImportItemsCompleted",
+        [System.Reflection.BindingFlags]::NonPublic -bor
+            [System.Reflection.BindingFlags]::Static
+    )
+    if ($null -eq $handlePackageImportStarted -or
+        $null -eq $handlePackageImportItemsCompleted) {
+        throw "Could not locate the managed package import guards."
+    }
+
+    $snapshotProject = Join-Path $workingRoot "managed-package-snapshot"
+    $snapshotPackageRoot = Join-Path $snapshotProject `
+        "Packages/com.wolfyvr.threadlight.components"
+    $snapshotSource = Join-Path $snapshotPackageRoot `
+        "Runtime/LiveMirroringSystem.cs"
+    New-Item `
+        -ItemType Directory `
+        -Path ([System.IO.Path]::GetDirectoryName($snapshotSource)) `
+        -Force |
+        Out-Null
+    Write-Utf8NoBom -Path $snapshotSource -Value "managed source"
+    New-Item `
+        -ItemType Directory `
+        -Path (Join-Path $snapshotProject "Assets") `
+        -Force |
+        Out-Null
+    $snapshotPackage = [UnityEditor.PackageManager.PackageInfo]::new()
+    $snapshotPackage.name = "com.wolfyvr.threadlight.components"
+    $snapshotPackage.version = $sourceVersion
+    $snapshotPackage.resolvedPath = $snapshotPackageRoot
+    [UnityEditor.PackageManager.PackageInfo]::RegisteredPackages =
+        [UnityEditor.PackageManager.PackageInfo[]] @($snapshotPackage)
+    [UnityEngine.Application]::dataPath = Join-Path $snapshotProject "Assets"
+    $handlePackageImportStarted.Invoke($null, [object[]] @("Legacy Import"))
+    Write-Utf8NoBom -Path $snapshotSource -Value "legacy overwrite"
+    [object[]] $snapshotArguments = New-Object object[] 1
+    $snapshotArguments[0] = [string[]] @()
+    $handlePackageImportItemsCompleted.Invoke($null, $snapshotArguments)
+    if ((Get-Content -Raw -LiteralPath $snapshotSource).Trim() -ne
+        "managed source") {
+        throw "A legacy GUID overwrite was not restored from the package snapshot."
+    }
+    [UnityEditor.PackageManager.PackageInfo]::RegisteredPackages =
+        [UnityEditor.PackageManager.PackageInfo[]] @()
+
+    function Invoke-LegacyImportMigration {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string] $Project,
+
+            [Parameter(Mandatory = $true)]
+            [string[]] $ImportedAssets
+        )
+
+        [UnityEngine.Application]::dataPath = Join-Path $Project "Assets"
+        [object[]] $arguments = New-Object object[] 1
+        $arguments[0] = [string[]] $ImportedAssets
+        $handleImportedAssets.Invoke($null, $arguments)
+    }
+
+    function Add-MetaGuid {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string] $Path,
+
+            [Parameter(Mandatory = $true)]
+            [string] $Guid
+        )
+
+        New-Item `
+            -ItemType Directory `
+            -Path ([System.IO.Path]::GetDirectoryName($Path)) `
+            -Force |
+            Out-Null
+        Write-Utf8NoBom -Path $Path -Value ("guid: " + $Guid)
+    }
+
+    function Add-LegacyFallbackFixture {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string] $Project,
+
+            [Parameter(Mandatory = $false)]
+            [string] $PackageName = "com.wolfy527.prefab-components.fallback",
+
+            [Parameter(Mandatory = $false)]
+            [switch] $Incomplete
+        )
+
+        $fallbackRoot = Join-Path $Project `
+            "Assets/Wolfy_527/~ Supporting Files/Prefab Components Fallback"
+        New-Item -ItemType Directory -Path $fallbackRoot -Force | Out-Null
+        Write-Utf8NoBom `
+            -Path (Join-Path $fallbackRoot "package.json") `
+            -Value (([ordered] @{
+                name = $PackageName
+                version = "1.1.9"
+            }) | ConvertTo-Json -Compress)
+        Write-Utf8NoBom `
+            -Path (Join-Path $fallbackRoot "creator-sentinel.txt") `
+            -Value "preserve"
+        Add-MetaGuid `
+            -Path (Join-Path $fallbackRoot `
+                "Live Mirroring/Runtime/LiveMirroringSystem.cs.meta") `
+            -Guid "b4ef5c021c9e12e45ac198b875874db0"
+        Add-MetaGuid `
+            -Path (Join-Path $fallbackRoot `
+                "Shared/Authoring/Runtime/GeneratedTargetMetadata.cs.meta") `
+            -Guid "e70a5bbf5de42b0478484ce9a4024548"
+        if (-not $Incomplete) {
+            Add-MetaGuid `
+                -Path (Join-Path $fallbackRoot `
+                    "Shared/Authoring/Runtime/AuthoringOnlyComponent.cs.meta") `
+                -Guid "076fe599df6ed2c478fcc7948ea0f20e"
+        }
+        Add-MetaGuid `
+            -Path (Join-Path $fallbackRoot `
+                "Shared/Authoring/Runtime/GeneratedEditorOnlyObject.cs.meta") `
+            -Guid "c9e72b6f6ebf0944cbc8e46be25353e4"
+        Add-MetaGuid `
+            -Path (Join-Path $fallbackRoot `
+                "Shared/Authoring/Runtime/GeneratedHierarchyMetadata.cs.meta") `
+            -Guid "f09ee1c973e46e642a90ceb8782efd1b"
+        Add-MetaGuid `
+            -Path (Join-Path $fallbackRoot `
+                "Shared/Authoring/Runtime/PrefabId.cs.meta") `
+            -Guid "139e0c1a87d72dc488222ee8b21bb47e"
+        Add-MetaGuid `
+            -Path (Join-Path $fallbackRoot "Ghost Material.mat.meta") `
+            -Guid "4b0d26895d37a904eb40cd0d68cdb0e7"
+        return $fallbackRoot
+    }
+
+    $reverseImportProject = Join-Path $workingRoot "legacy-reverse-import"
+    $reverseFallback = Add-LegacyFallbackFixture -Project $reverseImportProject
+    Invoke-LegacyImportMigration `
+        -Project $reverseImportProject `
+        -ImportedAssets @(
+            "Assets/Wolfy_527/~ Supporting Files/Prefab Components Fallback/package.json"
+        )
+    if (Test-Path -LiteralPath $reverseFallback) {
+        throw "A recognized fallback imported after Components was not quarantined."
+    }
+    $fallbackSentinel = Get-ChildItem `
+        -LiteralPath (Join-Path $reverseImportProject "Legacy Package Backups") `
+        -Filter "creator-sentinel.txt" `
+        -File `
+        -Recurse |
+        Select-Object -First 1
+    if ($null -eq $fallbackSentinel) {
+        throw "Fallback quarantine did not preserve creator-added files."
+    }
+
+    $unrelatedProject = Join-Path $workingRoot "unrelated-fallback"
+    $unrelatedFallback = Add-LegacyFallbackFixture `
+        -Project $unrelatedProject `
+        -PackageName "com.example.unrelated"
+    Invoke-LegacyImportMigration `
+        -Project $unrelatedProject `
+        -ImportedAssets @(
+            "Assets/Wolfy_527/~ Supporting Files/Prefab Components Fallback/package.json"
+        )
+    if (-not (Test-Path -LiteralPath $unrelatedFallback -PathType Container)) {
+        throw "An unrelated same-path fallback folder was incorrectly claimed."
+    }
+
+    $partialProject = Join-Path $workingRoot "partial-fallback-import"
+    $partialFallback = Add-LegacyFallbackFixture `
+        -Project $partialProject `
+        -Incomplete
+    Invoke-LegacyImportMigration `
+        -Project $partialProject `
+        -ImportedAssets @(
+            "Assets/Wolfy_527/~ Supporting Files/Prefab Components Fallback/package.json"
+        )
+    if (-not (Test-Path -LiteralPath $partialFallback -PathType Container)) {
+        throw "A partially imported fallback was claimed before ownership was proven."
+    }
+    Add-MetaGuid `
+        -Path (Join-Path $partialFallback `
+            "Shared/Authoring/Runtime/AuthoringOnlyComponent.cs.meta") `
+        -Guid "076fe599df6ed2c478fcc7948ea0f20e"
+    Invoke-LegacyImportMigration `
+        -Project $partialProject `
+        -ImportedAssets @(
+            "Assets/Wolfy_527/~ Supporting Files/Prefab Components Fallback/Shared/Authoring/Runtime/AuthoringOnlyComponent.cs.meta"
+        )
+    if (Test-Path -LiteralPath $partialFallback) {
+        throw "A completed fallback import was not retried and quarantined."
+    }
+
+    $oldGlizzyProject = Join-Path $workingRoot "old-glizzy-reverse-import"
+    $oldScripts = Join-Path $oldGlizzyProject `
+        "Assets/Wolfy_527/~ Supporting Files/Scripts"
+    New-Item -ItemType Directory -Path $oldScripts -Force | Out-Null
+    Write-Utf8NoBom `
+        -Path (Join-Path $oldScripts "LiveMirroringSystem.cs") `
+        -Value "// legacy"
+    Add-MetaGuid `
+        -Path (Join-Path $oldScripts "LiveMirroringSystem.cs.meta") `
+        -Guid "5c54d508ba4a3ee4baa5148633885b51"
+    Write-Utf8NoBom `
+        -Path (Join-Path $oldScripts "GeneratedTargetMetadata.cs") `
+        -Value "// legacy"
+    Add-MetaGuid `
+        -Path (Join-Path $oldScripts "GeneratedTargetMetadata.cs.meta") `
+        -Guid "48742d3549a555842844b99523feab8f"
+    $oldGhost = Join-Path $oldGlizzyProject `
+        "Assets/Wolfy_527/~ Supporting Files/Ghost Material.mat"
+    New-Item `
+        -ItemType Directory `
+        -Path ([System.IO.Path]::GetDirectoryName($oldGhost)) `
+        -Force |
+        Out-Null
+    Write-Utf8NoBom -Path $oldGhost -Value "legacy material"
+    Add-MetaGuid `
+        -Path ($oldGhost + ".meta") `
+        -Guid "4342400023fc9204e9fab7239dec44ef"
+    Invoke-LegacyImportMigration `
+        -Project $oldGlizzyProject `
+        -ImportedAssets @(
+            "Assets/Wolfy_527/~ Supporting Files/Scripts/LiveMirroringSystem.cs",
+            "Assets/Wolfy_527/~ Supporting Files/Ghost Material.mat"
+        )
+    $placeholder = Join-Path $oldScripts `
+        "Threadlight Components Migration Placeholder.txt"
+    if (-not (Test-Path -LiteralPath $placeholder -PathType Leaf) -or
+        (Test-Path -LiteralPath $oldGhost)) {
+        throw "The public old Glizzy reverse-import path was not migrated safely."
     }
 
     $bootstrapType = $assembly.GetType(
@@ -640,7 +898,12 @@ namespace UnityEditor.PackageManager
         if ($manifest.version -ne $ExpectedVersion) {
             throw (
                 "Expected fallback version $ExpectedVersion but found " +
-                "$($manifest.version)."
+                "$($manifest.version). Messages: " +
+                ([string]::Join(" | ", [UnityEngine.Debug]::Messages)) +
+                ". Warnings: " +
+                ([string]::Join(" | ", [UnityEngine.Debug]::Warnings)) +
+                ". Errors: " +
+                ([string]::Join(" | ", [UnityEngine.Debug]::Errors))
             )
         }
     }
@@ -945,7 +1208,8 @@ namespace UnityEditor.PackageManager
     }
 
     Write-Host (
-        "Semantic-version ordering, fallback install, relocated-script migration, " +
+        "Semantic-version ordering, reverse-import migration, fallback install, " +
+        "relocated-script migration, " +
         "upgrade, equal/newer " +
         "retention, managed VPM including legacy and renamed-lineage authority, " +
         "Builder preservation, and takeover " +

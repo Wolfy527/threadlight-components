@@ -23,6 +23,24 @@ internal static class LegacyScriptsFolderMigration
         "Assets/Wolfy_527/~ Supporting Files/Ghost Material.mat";
     private const string LegacyGhostMaterialGuid =
         "4342400023fc9204e9fab7239dec44ef";
+    private const string LegacyFallbackPath =
+        "Assets/Wolfy_527/~ Supporting Files/Prefab Components Fallback";
+    private const string LegacyFallbackPackageName =
+        "com.wolfy527.prefab-components.fallback";
+    private const string LegacyFallbackLiveMirroringGuid =
+        "b4ef5c021c9e12e45ac198b875874db0";
+    private const string LegacyFallbackAuthoringOnlyGuid =
+        "076fe599df6ed2c478fcc7948ea0f20e";
+    private const string LegacyFallbackTargetMetadataGuid =
+        "e70a5bbf5de42b0478484ce9a4024548";
+    private const string LegacyFallbackGeneratedObjectGuid =
+        "c9e72b6f6ebf0944cbc8e46be25353e4";
+    private const string LegacyFallbackHierarchyMetadataGuid =
+        "f09ee1c973e46e642a90ceb8782efd1b";
+    private const string LegacyFallbackPrefabIdGuid =
+        "139e0c1a87d72dc488222ee8b21bb47e";
+    private const string LegacyFallbackGhostMaterialGuid =
+        "4b0d26895d37a904eb40cd0d68cdb0e7";
     private const string LiveMirroringScriptGuid =
         "5c54d508ba4a3ee4baa5148633885b51";
     private const string GeneratedTargetMetadataGuid =
@@ -47,18 +65,337 @@ internal static class LegacyScriptsFolderMigration
         "Packages/com.wolfyvr.threadlight.mirroring";
     private const double CleanupQuietSeconds = 5.0;
     private const int MaximumCleanupAttempts = 3;
+    private const int MaximumMigrationAttempts = 3;
+    private const double MigrationRetrySeconds = 0.5;
 
     private static bool cleanupScheduled;
     private static bool cleanupWaitingForProjectChange;
+    private static bool migrationRunning;
+    private static bool refreshScheduled;
+    private static bool migrationRetryScheduled;
+    private static int migrationAttempts;
+    private static double nextMigrationAttemptAt;
     private static int cleanupAttempts;
     private static double cleanupQuietSince;
 
     static LegacyScriptsFolderMigration()
     {
+        TryRestoreInstalledPackage();
+        AssetDatabase.importPackageStarted += HandlePackageImportStarted;
+        AssetDatabase.onImportPackageItemsCompleted +=
+            HandlePackageImportItemsCompleted;
+        AssetDatabase.importPackageCompleted += HandlePackageImportCompleted;
+        AssetDatabase.importPackageCancelled += HandlePackageImportCancelled;
+        AssetDatabase.importPackageFailed += HandlePackageImportFailed;
         EditorApplication.delayCall += TryMigrate;
     }
 
+    private static void HandlePackageImportStarted(string packageName)
+    {
+        CaptureInstalledPackage();
+    }
+
+    private static void HandlePackageImportItemsCompleted(
+        string[] importedAssets)
+    {
+        TryRestoreInstalledPackage();
+        HandleImportedAssets(importedAssets);
+    }
+
+    private static void HandlePackageImportCompleted(string packageName)
+    {
+        TryRestoreInstalledPackage();
+        TryMigrate();
+    }
+
+    private static void HandlePackageImportCancelled(string packageName)
+    {
+        TryRestoreInstalledPackage();
+    }
+
+    private static void HandlePackageImportFailed(
+        string packageName,
+        string errorMessage)
+    {
+        TryRestoreInstalledPackage();
+    }
+
+    private static void CaptureInstalledPackage()
+    {
+        TryRestoreInstalledPackage();
+        UnityEditor.PackageManager.PackageInfo package =
+            UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                typeof(LegacyScriptsFolderMigration).Assembly);
+        if (package == null ||
+            string.IsNullOrWhiteSpace(package.resolvedPath) ||
+            !Directory.Exists(package.resolvedPath) ||
+            ContainsReparsePoint(package.resolvedPath))
+        {
+            return;
+        }
+
+        string root = Path.GetFullPath(package.resolvedPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        string snapshotRoot = GetPackageSnapshotRoot();
+        if (string.IsNullOrWhiteSpace(snapshotRoot))
+            return;
+        Directory.CreateDirectory(snapshotRoot);
+
+        foreach (string filePath in Directory.GetFiles(
+                     root,
+                     "*",
+                     SearchOption.AllDirectories))
+        {
+            string fullPath = Path.GetFullPath(filePath);
+            if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase) ||
+                HasReparsePoint(fullPath))
+            {
+                throw new InvalidDataException(
+                    "A Components package file resolved outside its root.");
+            }
+
+            string relativePath = fullPath.Substring(root.Length);
+            if (!IsProtectedPackagePath(relativePath))
+                continue;
+
+            string snapshotPath = Path.GetFullPath(Path.Combine(
+                snapshotRoot,
+                relativePath));
+            if (!snapshotPath.StartsWith(
+                    snapshotRoot,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    "A package snapshot path resolved outside its root.");
+            }
+
+            string parent = Path.GetDirectoryName(snapshotPath);
+            if (!string.IsNullOrWhiteSpace(parent))
+                Directory.CreateDirectory(parent);
+            File.Copy(fullPath, snapshotPath, true);
+        }
+    }
+
+    private static void TryRestoreInstalledPackage()
+    {
+        try
+        {
+            RestoreInstalledPackage();
+        }
+        catch (Exception exception)
+        {
+            Debug.LogError(
+                "[ThreadLight Components] Could not restore package-owned " +
+                "files after a legacy import. The recoverable snapshot was " +
+                "retained under Library and will be retried on reload.\n" +
+                exception);
+        }
+    }
+
+    private static void RestoreInstalledPackage()
+    {
+        string snapshotRoot = GetPackageSnapshotRoot();
+        if (string.IsNullOrWhiteSpace(snapshotRoot) ||
+            !Directory.Exists(snapshotRoot))
+        {
+            return;
+        }
+
+        UnityEditor.PackageManager.PackageInfo package =
+            UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                typeof(LegacyScriptsFolderMigration).Assembly);
+        if (package == null ||
+            string.IsNullOrWhiteSpace(package.resolvedPath) ||
+            !Directory.Exists(package.resolvedPath))
+        {
+            return;
+        }
+
+        string root = Path.GetFullPath(package.resolvedPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        string assetRoot = string.IsNullOrWhiteSpace(package.assetPath)
+            ? "Packages/" + package.name
+            : package.assetPath.Replace('\\', '/').TrimEnd('/');
+        List<string> changedAssetPaths = new List<string>();
+
+        foreach (string snapshotPath in Directory.GetFiles(
+                     snapshotRoot,
+                     "*",
+                     SearchOption.AllDirectories))
+        {
+            string fullSnapshotPath = Path.GetFullPath(snapshotPath);
+            if (!File.Exists(fullSnapshotPath))
+                continue;
+            if (!fullSnapshotPath.StartsWith(
+                    snapshotRoot,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    "A package snapshot file resolved outside its root.");
+            }
+
+            string relativePath =
+                fullSnapshotPath.Substring(snapshotRoot.Length);
+            string destination = Path.GetFullPath(Path.Combine(
+                root,
+                relativePath));
+            if (!destination.StartsWith(
+                    root,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    "A package snapshot path resolved outside Components.");
+            }
+
+            string parent = Path.GetDirectoryName(destination);
+            if (!string.IsNullOrWhiteSpace(parent))
+                Directory.CreateDirectory(parent);
+            byte[] current = File.Exists(destination)
+                ? File.ReadAllBytes(destination)
+                : null;
+            byte[] expected = File.ReadAllBytes(fullSnapshotPath);
+            if (ByteArraysEqual(current, expected))
+                continue;
+
+            File.WriteAllBytes(destination, expected);
+            if (!relativePath.EndsWith(
+                    ".meta",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                changedAssetPaths.Add(
+                    assetRoot + "/" + relativePath.Replace('\\', '/'));
+            }
+        }
+
+        Directory.Delete(snapshotRoot, true);
+        foreach (string assetPath in changedAssetPaths)
+        {
+            AssetDatabase.ImportAsset(
+                assetPath,
+                ImportAssetOptions.ForceUpdate |
+                ImportAssetOptions.ForceSynchronousImport);
+        }
+    }
+
+    private static string GetPackageSnapshotRoot()
+    {
+        if (string.IsNullOrWhiteSpace(Application.dataPath))
+            return null;
+
+        string projectRoot =
+            Directory.GetParent(Application.dataPath)?.FullName;
+        if (string.IsNullOrWhiteSpace(projectRoot))
+            return null;
+
+        string libraryRoot = Path.GetFullPath(Path.Combine(
+            projectRoot,
+            "Library"))
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        string snapshotRoot = Path.GetFullPath(Path.Combine(
+            libraryRoot,
+            "Threadlight",
+            "Components",
+            "Package Import Snapshot"))
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        return snapshotRoot.StartsWith(
+            libraryRoot,
+            StringComparison.OrdinalIgnoreCase)
+            ? snapshotRoot
+            : null;
+    }
+
+    private static bool IsProtectedPackagePath(string relativePath)
+    {
+        string normalized = relativePath.Replace('\\', '/');
+        return normalized.StartsWith(
+                   "Runtime/",
+                   StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith(
+                   "Editor/",
+                   StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(
+                   normalized,
+                   "Runtime.meta",
+                   StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(
+                   normalized,
+                   "Editor.meta",
+                   StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(
+                   normalized,
+                   "package.json",
+                   StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(
+                   normalized,
+                   "package.json.meta",
+                   StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(
+                   normalized,
+                   "Ghost Material.mat",
+                   StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(
+                   normalized,
+                   "Ghost Material.mat.meta",
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ByteArraysEqual(byte[] left, byte[] right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left == null || right == null || left.Length != right.Length)
+            return false;
+
+        for (int index = 0; index < left.Length; index++)
+        {
+            if (left[index] != right[index])
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Quarantines recognized legacy assets during the import callback, before
+    /// Unity can compile their obsolete scripts alongside the managed package.
+    /// </summary>
+    internal static void HandleImportedAssets(string[] importedAssets)
+    {
+        if (importedAssets == null)
+            return;
+
+        foreach (string importedAsset in importedAssets)
+        {
+            if (IsLegacyImportPath(importedAsset))
+            {
+                CancelMigrationRetry();
+                TryMigrate();
+                return;
+            }
+        }
+    }
+
     private static void TryMigrate()
+    {
+        if (migrationRunning)
+            return;
+
+        migrationRunning = true;
+        try
+        {
+            TryMigrateCore();
+        }
+        finally
+        {
+            migrationRunning = false;
+        }
+    }
+
+    private static void TryMigrateCore()
     {
         // Discovery and path validation are completed before any file moves.
         string projectRoot = Directory.GetParent(Application.dataPath)?.FullName;
@@ -81,9 +418,13 @@ internal static class LegacyScriptsFolderMigration
         string legacyGhostPath = Path.GetFullPath(
             Path.Combine(projectRoot, LegacyGhostMaterialPath));
         bool hasLegacyGhost = File.Exists(legacyGhostPath);
+        string legacyFallbackPath = Path.GetFullPath(
+            Path.Combine(projectRoot, LegacyFallbackPath));
+        bool hasLegacyFallback = Directory.Exists(legacyFallbackPath);
 
-        if (!hasLegacyScripts && !hasLegacyGhost)
+        if (!hasLegacyScripts && !hasLegacyGhost && !hasLegacyFallback)
         {
+            CancelMigrationRetry();
             ScheduleTemporaryCleanupIfNeeded(projectRoot);
             return;
         }
@@ -95,6 +436,9 @@ internal static class LegacyScriptsFolderMigration
                 assetsRoot,
                 StringComparison.OrdinalIgnoreCase) ||
             !legacyGhostPath.StartsWith(
+                assetsRoot,
+                StringComparison.OrdinalIgnoreCase) ||
+            !legacyFallbackPath.StartsWith(
                 assetsRoot,
                 StringComparison.OrdinalIgnoreCase))
         {
@@ -118,8 +462,14 @@ internal static class LegacyScriptsFolderMigration
             "Ghost Material.mat");
         string legacyGhostMetaPath = legacyGhostPath + ".meta";
         string backupGhostMetaPath = backupGhostPath + ".meta";
+        string backupFallbackPath = Path.Combine(
+            backupParent,
+            "Prefab Components Fallback");
+        string legacyFallbackMetaPath = legacyFallbackPath + ".meta";
+        string backupFallbackMetaPath = backupFallbackPath + ".meta";
         bool scriptsMoved = false;
         bool ghostMoved = false;
+        bool fallbackMoved = false;
 
         try
         {
@@ -151,9 +501,37 @@ internal static class LegacyScriptsFolderMigration
                     "package. It was left unchanged for safety.");
             }
 
+            if (hasLegacyFallback &&
+                !HasReparsePoint(legacyFallbackMetaPath) &&
+                IsRecognizedLegacyFallback(legacyFallbackPath))
+            {
+                Directory.CreateDirectory(backupParent);
+                Directory.Move(legacyFallbackPath, backupFallbackPath);
+                fallbackMoved = true;
+
+                if (File.Exists(legacyFallbackMetaPath))
+                {
+                    File.Move(
+                        legacyFallbackMetaPath,
+                        backupFallbackMetaPath);
+                }
+            }
+            else if (hasLegacyFallback)
+            {
+                Debug.LogWarning(
+                    "[ThreadLight Components] A fallback folder exists at " +
+                    "the old location, but its manifest and owned asset GUIDs " +
+                    "do not match the supported legacy package. It was left " +
+                    "unchanged for safety.");
+                if (HasLegacyFallbackManifest(legacyFallbackPath))
+                    ScheduleMigrationRetry();
+            }
+
             if (hasLegacyGhost &&
+                !HasReparsePoint(legacyGhostPath) &&
+                !HasReparsePoint(legacyGhostMetaPath) &&
                 string.Equals(
-                    AssetDatabase.AssetPathToGUID(LegacyGhostMaterialPath),
+                    ReadMetaGuid(legacyGhostMetaPath),
                     LegacyGhostMaterialGuid,
                     StringComparison.OrdinalIgnoreCase))
             {
@@ -172,7 +550,7 @@ internal static class LegacyScriptsFolderMigration
                     "asset. It was left unchanged for safety.");
             }
 
-            if (!scriptsMoved && !ghostMoved)
+            if (!scriptsMoved && !ghostMoved && !fallbackMoved)
                 return;
 
             if (scriptsMoved)
@@ -189,12 +567,20 @@ internal static class LegacyScriptsFolderMigration
                     "Ghost Material to:\n" + backupGhostPath);
             }
 
+            if (fallbackMoved)
+            {
+                Debug.Log(
+                    "[ThreadLight Components] Moved the obsolete embedded " +
+                    "fallback, including any creator-added files, to:\n" +
+                    backupFallbackPath);
+            }
+
             // All filesystem work is complete before requesting a refresh. This
             // callback may reload the scripting domain, so nothing transactional
             // is allowed to follow it.
             ScheduleTemporaryCleanupIfNeeded(projectRoot);
-            EditorApplication.delayCall += () =>
-                AssetDatabase.Refresh(ImportAssetOptions.Default);
+            CancelMigrationRetry();
+            ScheduleRefresh();
         }
         catch (Exception exception)
         {
@@ -210,7 +596,12 @@ internal static class LegacyScriptsFolderMigration
                     legacyGhostPath,
                     legacyGhostMetaPath,
                     backupGhostPath,
-                    backupGhostMetaPath);
+                    backupGhostMetaPath,
+                    fallbackMoved,
+                    legacyFallbackPath,
+                    legacyFallbackMetaPath,
+                    backupFallbackPath,
+                    backupFallbackMetaPath);
             }
             catch (Exception rollbackException)
             {
@@ -224,11 +615,43 @@ internal static class LegacyScriptsFolderMigration
                 "[ThreadLight Components] Could not migrate legacy assets. " +
                 "Close tools using those files and restart Unity to retry.\n" +
                 exception);
+            ScheduleMigrationRetry();
         }
+    }
+
+    private static bool IsLegacyImportPath(string assetPath)
+    {
+        if (string.IsNullOrWhiteSpace(assetPath))
+            return false;
+
+        string normalized = assetPath.Replace('\\', '/');
+        return IsAtOrBelow(normalized, LegacyScriptsPath) ||
+               IsAtOrBelow(normalized, LegacyFallbackPath) ||
+               string.Equals(
+                   normalized,
+                   LegacyGhostMaterialPath,
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAtOrBelow(string assetPath, string rootPath)
+    {
+        return string.Equals(
+                   assetPath,
+                   rootPath,
+                   StringComparison.OrdinalIgnoreCase) ||
+               assetPath.StartsWith(
+                   rootPath + "/",
+                   StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsRecognizedLegacyScripts(string legacyScriptsPath)
     {
+        if (ContainsReparsePoint(legacyScriptsPath) ||
+            HasReparsePoint(legacyScriptsPath + ".meta"))
+        {
+            return false;
+        }
+
         string actualGuid = AssetDatabase.AssetPathToGUID(LegacyScriptsPath);
         if (string.Equals(
                    actualGuid,
@@ -263,6 +686,129 @@ internal static class LegacyScriptsFolderMigration
         }
 
         return matches >= 2;
+    }
+
+    private static bool IsRecognizedLegacyFallback(string fallbackPath)
+    {
+        if (ContainsReparsePoint(fallbackPath))
+            return false;
+
+        string manifestPath = Path.Combine(fallbackPath, "package.json");
+        if (!File.Exists(manifestPath))
+            return false;
+
+        if (!TryReadLegacyFallbackManifest(manifestPath, out _))
+            return false;
+
+        return HasExpectedMetaGuid(
+                   fallbackPath,
+                   "Live Mirroring/Runtime/LiveMirroringSystem.cs.meta",
+                   LegacyFallbackLiveMirroringGuid) &&
+               HasExpectedMetaGuid(
+                   fallbackPath,
+                   "Shared/Authoring/Runtime/GeneratedTargetMetadata.cs.meta",
+                   LegacyFallbackTargetMetadataGuid) &&
+               HasExpectedMetaGuid(
+                   fallbackPath,
+                   "Shared/Authoring/Runtime/AuthoringOnlyComponent.cs.meta",
+                   LegacyFallbackAuthoringOnlyGuid) &&
+               HasExpectedMetaGuid(
+                   fallbackPath,
+                   "Shared/Authoring/Runtime/GeneratedEditorOnlyObject.cs.meta",
+                   LegacyFallbackGeneratedObjectGuid) &&
+               HasExpectedMetaGuid(
+                   fallbackPath,
+                   "Shared/Authoring/Runtime/GeneratedHierarchyMetadata.cs.meta",
+                   LegacyFallbackHierarchyMetadataGuid) &&
+               HasExpectedMetaGuid(
+                   fallbackPath,
+                   "Shared/Authoring/Runtime/PrefabId.cs.meta",
+                   LegacyFallbackPrefabIdGuid) &&
+               HasExpectedMetaGuid(
+                   fallbackPath,
+                   "Ghost Material.mat.meta",
+                   LegacyFallbackGhostMaterialGuid);
+    }
+
+    private static bool HasLegacyFallbackManifest(string fallbackPath)
+    {
+        return TryReadLegacyFallbackManifest(
+            Path.Combine(fallbackPath, "package.json"),
+            out _);
+    }
+
+    private static bool TryReadLegacyFallbackManifest(
+        string manifestPath,
+        out LegacyFallbackManifest manifest)
+    {
+        manifest = null;
+        if (!File.Exists(manifestPath) || HasReparsePoint(manifestPath))
+            return false;
+
+        try
+        {
+            manifest = JsonUtility.FromJson<LegacyFallbackManifest>(
+                File.ReadAllText(manifestPath));
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        return manifest != null &&
+               string.Equals(
+                   manifest.name,
+                   LegacyFallbackPackageName,
+                   StringComparison.Ordinal) &&
+               !string.IsNullOrWhiteSpace(manifest.version);
+    }
+
+    private static bool HasExpectedMetaGuid(
+        string rootPath,
+        string relativePath,
+        string expectedGuid)
+    {
+        string metaPath = Path.GetFullPath(Path.Combine(rootPath, relativePath));
+        string normalizedRoot = Path.GetFullPath(rootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        return metaPath.StartsWith(
+                   normalizedRoot,
+                   StringComparison.OrdinalIgnoreCase) &&
+               !HasReparsePoint(metaPath) &&
+               string.Equals(
+                   ReadMetaGuid(metaPath),
+                   expectedGuid,
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ContainsReparsePoint(string rootPath)
+    {
+        Stack<DirectoryInfo> pending = new Stack<DirectoryInfo>();
+        pending.Push(new DirectoryInfo(rootPath));
+
+        while (pending.Count > 0)
+        {
+            DirectoryInfo directory = pending.Pop();
+            if ((directory.Attributes & FileAttributes.ReparsePoint) != 0)
+                return true;
+
+            foreach (FileSystemInfo entry in directory.EnumerateFileSystemInfos())
+            {
+                if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
+                    return true;
+                if (entry is DirectoryInfo child)
+                    pending.Push(child);
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasReparsePoint(string path)
+    {
+        return (File.Exists(path) || Directory.Exists(path)) &&
+               (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
     }
 
     private static void CreateCompilePlaceholders(
@@ -317,37 +863,150 @@ internal static class LegacyScriptsFolderMigration
         string legacyGhostPath,
         string legacyGhostMetaPath,
         string backupGhostPath,
-        string backupGhostMetaPath)
+        string backupGhostMetaPath,
+        bool fallbackMoved,
+        string legacyFallbackPath,
+        string legacyFallbackMetaPath,
+        string backupFallbackPath,
+        string backupFallbackMetaPath)
     {
-        if (scriptsMoved)
-        {
-            if (Directory.Exists(legacyScriptsPath))
-                Directory.Delete(legacyScriptsPath, true);
-            if (File.Exists(legacyScriptsMetaPath))
-                File.Delete(legacyScriptsMetaPath);
+        List<Exception> rollbackErrors = new List<Exception>();
 
-            if (Directory.Exists(backupScriptsPath))
-                Directory.Move(backupScriptsPath, legacyScriptsPath);
-            if (File.Exists(backupScriptsMetaPath))
+        TryRollback(
+            ghostMoved,
+            () =>
             {
-                File.Move(
-                    backupScriptsMetaPath,
-                    legacyScriptsMetaPath);
-            }
-        }
+                if (File.Exists(legacyGhostPath))
+                    File.Delete(legacyGhostPath);
+                if (File.Exists(legacyGhostMetaPath))
+                    File.Delete(legacyGhostMetaPath);
 
-        if (ghostMoved)
+                if (File.Exists(backupGhostPath))
+                    File.Move(backupGhostPath, legacyGhostPath);
+                if (File.Exists(backupGhostMetaPath))
+                    File.Move(backupGhostMetaPath, legacyGhostMetaPath);
+            },
+            rollbackErrors);
+
+        TryRollback(
+            fallbackMoved,
+            () =>
+            {
+                if (Directory.Exists(legacyFallbackPath))
+                    Directory.Delete(legacyFallbackPath, true);
+                if (File.Exists(legacyFallbackMetaPath))
+                    File.Delete(legacyFallbackMetaPath);
+
+                if (Directory.Exists(backupFallbackPath))
+                    Directory.Move(backupFallbackPath, legacyFallbackPath);
+                if (File.Exists(backupFallbackMetaPath))
+                {
+                    File.Move(
+                        backupFallbackMetaPath,
+                        legacyFallbackMetaPath);
+                }
+            },
+            rollbackErrors);
+
+        TryRollback(
+            scriptsMoved,
+            () =>
+            {
+                if (Directory.Exists(legacyScriptsPath))
+                    Directory.Delete(legacyScriptsPath, true);
+                if (File.Exists(legacyScriptsMetaPath))
+                    File.Delete(legacyScriptsMetaPath);
+
+                if (Directory.Exists(backupScriptsPath))
+                    Directory.Move(backupScriptsPath, legacyScriptsPath);
+                if (File.Exists(backupScriptsMetaPath))
+                {
+                    File.Move(
+                        backupScriptsMetaPath,
+                        legacyScriptsMetaPath);
+                }
+            },
+            rollbackErrors);
+
+        if (rollbackErrors.Count > 0)
         {
-            if (File.Exists(legacyGhostPath))
-                File.Delete(legacyGhostPath);
-            if (File.Exists(legacyGhostMetaPath))
-                File.Delete(legacyGhostMetaPath);
-
-            if (File.Exists(backupGhostPath))
-                File.Move(backupGhostPath, legacyGhostPath);
-            if (File.Exists(backupGhostMetaPath))
-                File.Move(backupGhostMetaPath, legacyGhostMetaPath);
+            throw new AggregateException(
+                "One or more legacy assets could not be restored.",
+                rollbackErrors);
         }
+    }
+
+    private static void TryRollback(
+        bool shouldRun,
+        Action rollback,
+        ICollection<Exception> errors)
+    {
+        if (!shouldRun)
+            return;
+
+        try
+        {
+            rollback();
+        }
+        catch (Exception exception)
+        {
+            errors.Add(exception);
+        }
+    }
+
+    private static void ScheduleMigrationRetry()
+    {
+        if (migrationRetryScheduled ||
+            migrationAttempts >= MaximumMigrationAttempts)
+        {
+            return;
+        }
+
+        migrationRetryScheduled = true;
+        nextMigrationAttemptAt =
+            EditorApplication.timeSinceStartup + MigrationRetrySeconds;
+        EditorApplication.update += RetryMigrationWhenQuiet;
+    }
+
+    private static void RetryMigrationWhenQuiet()
+    {
+        if (EditorApplication.isCompiling ||
+            EditorApplication.isUpdating ||
+            EditorApplication.timeSinceStartup < nextMigrationAttemptAt)
+        {
+            return;
+        }
+
+        EditorApplication.update -= RetryMigrationWhenQuiet;
+        migrationRetryScheduled = false;
+        migrationAttempts++;
+        TryMigrate();
+    }
+
+    private static void CancelMigrationRetry()
+    {
+        if (migrationRetryScheduled)
+        {
+            EditorApplication.update -= RetryMigrationWhenQuiet;
+            migrationRetryScheduled = false;
+        }
+
+        migrationAttempts = 0;
+    }
+
+    private static void ScheduleRefresh()
+    {
+        if (refreshScheduled)
+            return;
+
+        refreshScheduled = true;
+        EditorApplication.delayCall += RefreshAfterMigration;
+    }
+
+    private static void RefreshAfterMigration()
+    {
+        refreshScheduled = false;
+        AssetDatabase.Refresh(ImportAssetOptions.Default);
     }
 
     private static void ScheduleTemporaryCleanup()
@@ -509,6 +1168,25 @@ internal static class LegacyScriptsFolderMigration
                    Path.Combine(
                        projectRoot,
                        ThreadlightMirroringPackagePath)));
+    }
+
+    [Serializable]
+    private sealed class LegacyFallbackManifest
+    {
+        public string name;
+        public string version;
+    }
+}
+
+internal sealed class LegacyScriptsImportPostprocessor : AssetPostprocessor
+{
+    private static void OnPostprocessAllAssets(
+        string[] importedAssets,
+        string[] deletedAssets,
+        string[] movedAssets,
+        string[] movedFromAssetPaths)
+    {
+        LegacyScriptsFolderMigration.HandleImportedAssets(importedAssets);
     }
 }
 }
