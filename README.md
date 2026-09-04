@@ -17,6 +17,12 @@ A standalone Unity package is also available on the
 keeps an installed VCC package, updates an older fallback, and does not
 downgrade a newer fallback.
 
+If an older Glizzy import has already left compiler errors inside
+`Assets/Wolfy_527/~ Supporting Files/Prefab Components Fallback`, updating alone
+cannot run Unity's cleanup code. Preserve that folder and its `.meta` file in
+a backup outside `Assets` before reopening Unity. Do this only for the obsolete
+Glizzy fallback; prefabs that still reference its scripts need migration first.
+
 ## Includes
 
 - The lightweight customer prefab identity contract

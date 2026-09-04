@@ -47,6 +47,7 @@ jobs:
         run: |
           archive="${{ steps.package.outputs.name }}-${{ steps.package.outputs.version }}.zip"
           archive_path="$RUNNER_TEMP/$archive"
+          find . -not -path './.git/*' -exec touch -t 200001010000 {} +
           zip -r "$archive_path" . \
             -x ".git/*" ".github/*" ".vpm-listing/*" ".gitignore" ".gitattributes"
           (cd "$(dirname "$archive_path")" && sha256sum "$archive") > "$archive_path.sha256"
@@ -63,6 +64,18 @@ jobs:
             .displayName == "ThreadLight Components" and
             .version == "${{ steps.package.outputs.version }}"
           ' > /dev/null
+          python - "${{ steps.archive.outputs.path }}" <<'PY'
+          import sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              unexpected = [
+                  entry.filename for entry in archive.infolist()
+                  if entry.date_time != (2000, 1, 1, 0, 0, 0)
+              ]
+          if unexpected:
+              raise SystemExit(
+                  "Archive contains non-normalized timestamps: " +
+                  ", ".join(unexpected[:10]))
+          PY
 
       - name: Build fallback installer
         shell: pwsh
