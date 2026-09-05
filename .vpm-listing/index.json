@@ -7,6 +7,41 @@
   "packages": {
     "com.wolfyvr.threadlight.components": {
       "versions": {
+        "1.0.3": {
+          "name": "com.wolfyvr.threadlight.components",
+          "displayName": "ThreadLight Components",
+          "version": "1.0.3",
+          "compatibilityLineage": "82661455-d14d-4ad0-9fc9-759d9bdb485c",
+          "compatibilityReleaseEpoch": 1,
+          "unity": "2022.3",
+          "description": "Lightweight customer support components for ThreadLight prefabs.",
+          "documentationUrl": "https://github.com/Wolfy527/threadlight-components#readme",
+          "changelogUrl": "https://github.com/Wolfy527/threadlight-components/blob/main/CHANGELOG.md",
+          "licensesUrl": "https://github.com/Wolfy527/threadlight-components/blob/main/LICENSE.md",
+          "license": "LicenseRef-Threadlight-Proprietary",
+          "vpmDependencies": {
+            "com.vrchat.avatars": ">=3.7.0 <4.0.0",
+            "com.wolfyvr.threadlight.ui": ">=1.0.0 <2.0.0"
+          },
+          "legacyFolders": {
+            "Assets\\Wolfy_527\\~ Supporting Files\\Scripts": "1a754f8d169daa9408e3740cfeeab3aa"
+          },
+          "legacyFiles": {
+            "Assets\\Wolfy_527\\~ Supporting Files\\Ghost Material.mat": "4342400023fc9204e9fab7239dec44ef"
+          },
+          "legacyPackages": [
+            "dev.avatar-tools.prop-components",
+            "com.wolfy527.prefab-components.fallback",
+            "com.wolfyvr.threadlight.components.fallback"
+          ],
+          "author": {
+            "name": "WolfyVR",
+            "email": "Wolfy527@users.noreply.github.com",
+            "url": "https://github.com/Wolfy527"
+          },
+          "url": "https://github.com/Wolfy527/threadlight-components/releases/download/v1.0.3/com.wolfyvr.threadlight.components-1.0.3.zip",
+          "zipSHA256": "b494ed29a1611079484843e77bd133955b99a8f84a8dbc2950997beda6eebebc"
+        },
         "1.0.2": {
           "name": "com.wolfyvr.threadlight.components",
           "displayName": "ThreadLight Components",
@@ -108,6 +143,25 @@
             "email": "Wolfy527@users.noreply.github.com",
             "url": "https://github.com/Wolfy527"
           }
+        }
+      }
+    },
+    "com.wolfyvr.threadlight.ui": {
+      "versions": {
+        "1.0.0": {
+          "name": "com.wolfyvr.threadlight.ui",
+          "displayName": "ThreadLight UI",
+          "version": "1.0.0",
+          "unity": "2022.3",
+          "description": "Shared editor theme and controls for ThreadLight customer and creator tools.",
+          "license": "LicenseRef-Threadlight-Proprietary",
+          "author": {
+            "name": "WolfyVR",
+            "email": "Wolfy527@users.noreply.github.com",
+            "url": "https://github.com/Wolfy527"
+          },
+          "url": "https://github.com/Wolfy527/threadlight-ui/releases/download/v1.0.0/com.wolfyvr.threadlight.ui-1.0.0.zip",
+          "zipSHA256": "1a2f69b9a368d59cbe09e530f7b0b0c396d74fedd0e37ac233c18b65a7b9c68d"
         }
       }
     }

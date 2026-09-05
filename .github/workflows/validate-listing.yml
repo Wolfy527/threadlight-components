@@ -32,7 +32,7 @@ jobs:
             .url == "https://wolfy527.github.io/threadlight-components/index.json" and
             .packages["dev.avatar-tools.prop-builder"] == null and
             .packages["com.wolfyvr.threadlight.builder"] == null and
-            ((.packages | keys) - ["com.wolfyvr.threadlight.components"] | length) == 0 and
+            ((.packages | keys) - ["com.wolfyvr.threadlight.components", "com.wolfyvr.threadlight.ui"] | length) == 0 and
             if .packages["com.wolfyvr.threadlight.components"] == null then
               true
             else
@@ -58,6 +58,18 @@ jobs:
               ($entry.value.url | endswith(".zip")) and
               ($entry.value.zipSHA256 | test("^[0-9a-f]{64}$")))
             end
+          ' .vpm-listing/index.json > /dev/null
+
+      - name: Validate neutral shared UI dependency
+        shell: bash
+        run: |
+          jq -e '
+            all((.packages["com.wolfyvr.threadlight.ui"].versions // {}) | to_entries[];
+              .key == .value.version and
+              .value.name == "com.wolfyvr.threadlight.ui" and
+              ((.value.vpmDependencies // {}) | length) == 0 and
+              ((.value.dependencies // {}) | length) == 0 and
+              (.value.zipSHA256 | test("^[0-9a-f]{64}$")))
           ' .vpm-listing/index.json > /dev/null
 
       - name: Reject premature Add to VCC links
@@ -86,18 +98,16 @@ jobs:
         shell: bash
         run: |
           jq -r '
-            (.packages["com.wolfyvr.threadlight.components"]?.versions // {}) |
-            to_entries[] |
-            [.key, .value.url, .value.zipSHA256] |
+            .packages[] | .versions | to_entries[] |
+            [.value.name, .key, .value.url, .value.zipSHA256] |
             @tsv
           ' .vpm-listing/index.json |
-          while IFS=$'\t' read -r version package_url expected_sha; do
-            archive="package-$version.zip"
+          while IFS=$'\t' read -r package_name version package_url expected_sha; do
+            archive="$package_name-$version.zip"
             curl --fail --location --silent --show-error "$package_url" --output "$archive"
             echo "$expected_sha  $archive" | sha256sum --check -
-            unzip -p "$archive" package.json | jq -e --arg version "$version" '
-              .name == "com.wolfyvr.threadlight.components" and
-              .displayName == "ThreadLight Components" and
+            unzip -p "$archive" package.json | jq -e --arg name "$package_name" --arg version "$version" '
+              .name == $name and
               .version == $version
             ' > /dev/null
           done
