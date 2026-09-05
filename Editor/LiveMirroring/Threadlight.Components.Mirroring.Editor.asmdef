@@ -1,0 +1,12 @@
+{
+  "name": "Threadlight.Components.Mirroring.Editor",
+  "rootNamespace": "Threadlight.Components.Editor",
+  "references": [
+    "Threadlight.Components",
+    "Threadlight.EditorUI"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "autoReferenced": true
+}

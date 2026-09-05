@@ -187,17 +187,23 @@ if ($ExpectedName -eq "com.wolfyvr.threadlight.components") {
             -BasePath $root -FullPath $_.FullName).Replace('\', '/')
         if (-not $relative.StartsWith(
                 "Runtime/", [StringComparison]::Ordinal) -and
-            $relative -ne $allowedEditorSource) {
+            $relative -ne $allowedEditorSource -and
+            -not $relative.StartsWith("Editor/LiveMirroring/", [StringComparison]::Ordinal)) {
             $errors.Add(
-                "Customer package source is outside Runtime or the legacy migration editor: '$relative'."
+                "Customer package source is outside Runtime, customer Live Mirroring, or legacy migration: '$relative'."
             )
         }
     }
 
     $componentSources |
         ForEach-Object {
+            $relative = (Get-PackageRelativePath `
+                -BasePath $root -FullPath $_.FullName).Replace('\', '/')
+            $pattern = if ($relative.StartsWith("Editor/LiveMirroring/", [StringComparison]::Ordinal)) {
+                '\b(EditorWindow|MenuItem)\b'
+            } else { $creatorApiPattern }
             if (Select-String -LiteralPath $_.FullName `
-                    -Pattern $creatorApiPattern -Quiet) {
+                    -Pattern $pattern -Quiet) {
                 $relative = Get-PackageRelativePath `
                     -BasePath $root -FullPath $_.FullName
                 $errors.Add(

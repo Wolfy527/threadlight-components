@@ -680,7 +680,7 @@ namespace UnityEditor.PackageManager
         [UnityEngine.Debug]::Messages.Clear()
         [UnityEngine.Debug]::Errors.Clear()
         [UnityEngine.Debug]::Warnings.Clear()
-        foreach ($fieldName in @("running", "cleanupScheduled")) {
+        foreach ($fieldName in @("running", "cleanupScheduled", "waitingForSharedUi")) {
             $bootstrapType.GetField(
                 $fieldName,
                 [System.Reflection.BindingFlags]::NonPublic -bor
@@ -697,7 +697,8 @@ namespace UnityEditor.PackageManager
     function New-FallbackScenario {
         param(
             [Parameter(Mandatory = $true)]
-            [string] $Name
+            [string] $Name,
+            [switch] $WithoutResolvedUi
         )
         $project = Join-Path $workingRoot $Name
         $assets = Join-Path $project "Assets"
@@ -716,6 +717,15 @@ namespace UnityEditor.PackageManager
         Write-Utf8NoBom `
             -Path (Join-Path $payloadSource "package.json") `
             -Value $payloadManifest
+        $uiManifest = '{"name":"com.wolfyvr.threadlight.ui","version":"1.0.0"}'
+        $stagedUi = Join-Path $payloadSource "SharedUI~"
+        New-Item -ItemType Directory -Path $stagedUi -Force | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $stagedUi "package.json") -Value $uiManifest
+        if (-not $WithoutResolvedUi) {
+            $resolvedUi = Join-Path $project "Packages/com.wolfyvr.threadlight.ui"
+            New-Item -ItemType Directory -Path $resolvedUi -Force | Out-Null
+            Write-Utf8NoBom -Path (Join-Path $resolvedUi "package.json") -Value $uiManifest
+        }
         $payloadScripts = [ordered] @{
             "Runtime/LiveMirroringSystem.cs" =
                 "5c54d508ba4a3ee4baa5148633885b51"
@@ -739,6 +749,36 @@ namespace UnityEditor.PackageManager
             -DestinationPath ($payload + ".zip")
         Move-Item -LiteralPath ($payload + ".zip") -Destination $payload
         return $project
+    }
+
+    Reset-BootstrapState
+    $uiFirstScenario = New-FallbackScenario -Name "shared-ui-before-components" -WithoutResolvedUi
+    [UnityEngine.Application]::dataPath = Join-Path $uiFirstScenario "Assets"
+    $bootstrapRun.Invoke($null, @())
+    if (-not (Test-Path (Join-Path $uiFirstScenario "Packages/com.wolfyvr.threadlight.ui/package.json")) -or
+        (Test-Path (Join-Path $uiFirstScenario "Assets/Threadlight/Components/Fallback"))) {
+        throw "Shared UI must install before exposing the Components fallback."
+    }
+    # This stub verifies bootstrap ordering, not Unity compilation. The real
+    # package matrix must separately prove that the editor dependency compiles.
+    $uiAssemblyName = [System.Reflection.AssemblyName]::new("Threadlight.EditorUI")
+    [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
+        $uiAssemblyName, [System.Reflection.Emit.AssemblyBuilderAccess]::Run) | Out-Null
+    $bootstrapRun.Invoke($null, @())
+    if (-not (Test-Path (Join-Path $uiFirstScenario "Assets/Threadlight/Components/Fallback"))) {
+        throw "Components did not resume installation after the shared UI became available."
+    }
+    Reset-BootstrapState
+    $unknownUiScenario = New-FallbackScenario -Name "unknown-shared-ui-destination" -WithoutResolvedUi
+    [UnityEngine.Application]::dataPath = Join-Path $unknownUiScenario "Assets"
+    $unknownUiRoot = Join-Path $unknownUiScenario "Packages/com.wolfyvr.threadlight.ui"
+    New-Item -ItemType Directory -Path $unknownUiRoot -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $unknownUiRoot "creator.txt") -Value "preserve me"
+    $bootstrapRun.Invoke($null, @())
+    if ([UnityEngine.Debug]::Errors.Count -eq 0 -or
+        (Get-Content (Join-Path $unknownUiRoot "creator.txt") -Raw) -ne "preserve me" -or
+        (Test-Path (Join-Path $unknownUiScenario "Assets/Threadlight/Components/Fallback"))) {
+        throw "An unrecognized UI destination was not preserved and refused."
     }
 
     function Set-CompatibleFallback {
@@ -1024,13 +1064,19 @@ namespace UnityEditor.PackageManager
     $managedFallback = Set-FullFallback `
         -Project $managedScenario `
         -Version "1.0.0"
-    $managedFallbackAssemblyCount = @(
-        Get-ChildItem -LiteralPath $managedFallback -Recurse -Filter "*.asmdef"
-    ).Count
-    if ($managedFallbackAssemblyCount -ne 2) {
+    $managedFallbackAssemblyNames = @(
+        Get-ChildItem -LiteralPath $managedFallback -Recurse -Filter "*.asmdef" |
+            ForEach-Object { (Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json).name }
+    )
+    $expectedFallbackAssemblyNames = @(
+        "Threadlight.Components",
+        "Threadlight.Components.Support.Editor",
+        "Threadlight.Components.Mirroring.Editor"
+    )
+    if (@(Compare-Object $expectedFallbackAssemblyNames $managedFallbackAssemblyNames).Count -ne 0) {
         throw (
-            "The managed coexistence fixture did not contain both customer " +
-            "fallback assemblies. Found $managedFallbackAssemblyCount.")
+            "The managed coexistence fixture must contain the runtime, installer, " +
+            "and customer mirroring editor assemblies. Found: $managedFallbackAssemblyNames.")
     }
     $managedRelocatedScript = Join-Path `
         $managedScenario `
@@ -1071,9 +1117,9 @@ namespace UnityEditor.PackageManager
             -Recurse `
             -Filter "*.asmdef"
     ).Count
-    if ($managedBackupAssemblyCount -ne 2) {
+    if ($managedBackupAssemblyCount -ne $expectedFallbackAssemblyNames.Count) {
         throw (
-            "The quarantined fallback did not retain both customer assemblies. " +
+            "The quarantined fallback did not retain all customer assemblies. " +
             "Found $managedBackupAssemblyCount.")
     }
     if (Test-Path -LiteralPath $managedRelocatedScript) {
@@ -1208,7 +1254,8 @@ namespace UnityEditor.PackageManager
     }
 
     Write-Host (
-        "Semantic-version ordering, reverse-import migration, fallback install, " +
+        "Shared UI resolution ordering and unknown destination preservation, " +
+        "semantic-version ordering, reverse-import migration, fallback install, " +
         "relocated-script migration, " +
         "upgrade, equal/newer " +
         "retention, managed VPM including legacy and renamed-lineage authority, " +

@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.2
+## 1.0.3
 
-- Normalize release archive timestamps for Windows imports.
-- Clarify recovery when an older Glizzy import already prevents compilation.
+- Restore live mirroring, ghost previews, and synchronized scaling for customer prefabs.
+- Use the shared ThreadLight inspector theme and include it in exported installers.

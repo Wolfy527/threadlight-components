@@ -15,6 +15,11 @@ using PackageInfo = UnityEditor.PackageManager.PackageInfo;
 [InitializeOnLoad]
 internal static class ThreadlightComponentsBootstrap
 {
+    private const string SharedUiPackageName = "com.wolfyvr.threadlight.ui";
+    private const string SharedUiPackagePath = "Packages/com.wolfyvr.threadlight.ui";
+    private static bool waitingForSharedUi;
+    private static double sharedUiWaitStarted;
+
     private const string ManagedPackageName =
         "com.wolfyvr.threadlight.components";
     // Stable across product and package renames. Increment the release epoch
@@ -205,6 +210,11 @@ internal static class ThreadlightComponentsBootstrap
                 return;
             }
 
+            // Resolve the editor dependency in a separate import phase. Exposing
+            // Components first would prevent compilation and strand this installer.
+            if (!EnsureSharedUiAvailable())
+                return;
+
             bool fallbackPathExists = Directory.Exists(
                 ToAbsolutePath(FallbackPackagePath));
             bool hasFallbackPackage = HasPackageManifest(
@@ -264,6 +274,94 @@ internal static class ThreadlightComponentsBootstrap
         {
             running = false;
         }
+    }
+
+    private static bool EnsureSharedUiAvailable()
+    {
+        bool registered = TryGetRegisteredPackageVersion(
+            SharedUiPackageName, out string registeredVersion, out _);
+        if (registered && !registeredVersion.StartsWith("1.", StringComparison.Ordinal))
+            throw new InvalidDataException(
+                "The registered ThreadLight UI version is incompatible with this " +
+                "fallback. Update ThreadLight Components through VCC.");
+        string target = ToAbsolutePath(SharedUiPackagePath);
+        bool hasManifest = HasPackageManifest(
+            SharedUiPackagePath, SharedUiPackageName, out string version);
+        if (Directory.Exists(target) && !hasManifest)
+            throw new InvalidDataException(
+                "The shared UI destination contains unrecognized content and was " +
+                "left unchanged:\n" + SharedUiPackagePath);
+        if (hasManifest && !version.StartsWith("1.", StringComparison.Ordinal))
+            throw new InvalidDataException(
+                "The installed ThreadLight UI version is incompatible with this " +
+                "fallback. Update ThreadLight Components through VCC.");
+
+        if (registered || hasManifest)
+        {
+            if (IsAssemblyLoaded("Threadlight.EditorUI"))
+                return true;
+            WaitForSharedUi();
+            return false;
+        }
+
+        if (IsAssemblyLoaded("Threadlight.EditorUI"))
+            throw new InvalidDataException(
+                "An older Authoring installation already owns the ThreadLight UI " +
+                "assembly. Update Authoring before installing this fallback.");
+
+        string stagingRoot = Path.Combine(GetProjectRoot(), "Library", "Threadlight",
+            "Shared UI Install", Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(stagingRoot);
+            ExtractPayload(ToAbsolutePath(PayloadPath), stagingRoot);
+            string stagedUi = Path.Combine(stagingRoot, "SharedUI~");
+            if (!HasPackageManifestAtAbsolutePath(
+                    stagedUi, SharedUiPackageName, out string bundledUiVersion,
+                    out _) || !bundledUiVersion.StartsWith("1.", StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "The bundled fallback does not contain a compatible shared UI package.");
+            Directory.CreateDirectory(Path.GetDirectoryName(target));
+            Directory.Move(stagedUi, target);
+            Debug.Log("[Threadlight Components] Installed the shared UI dependency. " +
+                "Components will be installed after Unity resolves it.");
+        }
+        finally
+        {
+            if (Directory.Exists(stagingRoot))
+                Directory.Delete(stagingRoot, true);
+        }
+        WaitForSharedUi();
+        return false;
+    }
+
+    private static void WaitForSharedUi()
+    {
+        if (waitingForSharedUi)
+            return;
+        waitingForSharedUi = true;
+        sharedUiWaitStarted = EditorApplication.timeSinceStartup;
+        Client.Resolve();
+        EditorApplication.delayCall += ContinueAfterSharedUi;
+    }
+
+    private static void ContinueAfterSharedUi()
+    {
+        if (IsAssemblyLoaded("Threadlight.EditorUI"))
+        {
+            waitingForSharedUi = false;
+            ScheduleRun();
+            return;
+        }
+        if (EditorApplication.timeSinceStartup - sharedUiWaitStarted > 120)
+        {
+            waitingForSharedUi = false;
+            Debug.LogError("[Threadlight Components] Unity has not loaded the shared UI " +
+                "dependency. The fallback was not imported and the installer was " +
+                "retained. Resolve any package or compilation errors, then reopen Unity.");
+            return;
+        }
+        EditorApplication.delayCall += ContinueAfterSharedUi;
     }
 
     private static List<LegacyFileMove>
@@ -1477,6 +1575,14 @@ internal static class ThreadlightComponentsBootstrap
         EditorApplication.delayCall -= CleanupInstallerPayload;
         cleanupScheduled = false;
 
+        // Importing the fallback may have queued compilation of this installer.
+        // Keep its source available until Unity finishes that work.
+        if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+        {
+            ScheduleInstallerCleanup();
+            return;
+        }
+
         try
         {
             if (string.Equals(
@@ -1484,20 +1590,11 @@ internal static class ThreadlightComponentsBootstrap
                     InstallerPayloadGuid,
                     StringComparison.OrdinalIgnoreCase))
             {
-                string ownershipMarkerPath =
-                    ToAbsolutePath(OwnershipMarkerPath);
-                if (File.Exists(ownershipMarkerPath) &&
-                    string.Equals(
-                        File.ReadAllText(ownershipMarkerPath).Trim(),
-                        OwnershipMarkerContents,
-                        StringComparison.Ordinal))
-                {
-                    AssetDatabase.DeleteAsset(InstallerRoot);
-                }
-                else
-                {
-                    AssetDatabase.DeleteAsset(PayloadPath);
-                }
+                // Unity can still have a queued compiler response file referring
+                // to this source even when isCompiling is false. Keep the small
+                // inert bootstrap script; remove only its owned binary payload.
+                // Run returns immediately once that payload is absent.
+                AssetDatabase.DeleteAsset(PayloadPath);
             }
         }
         catch (Exception exception)

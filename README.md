@@ -26,14 +26,18 @@ Glizzy fallback; prefabs that still reference its scripts need migration first.
 ## Includes
 
 - The lightweight customer prefab identity contract
-- Compatibility components for already distributed Live Mirroring prefabs
+- Real-time target mirroring, shared scaling, and Scene-view ghost previews for customer prefab setup
+- A Live Mirroring inspector compatible with already distributed prefabs
 - Runtime and upload cleanup for customer-side support state
 - A guarded fallback installer for customers who do not use VCC
 
-Creator-side windows, previews, exporters, and shared UI are supplied by
+Creator-side generation windows and exporters are supplied by
 ThreadLight Authoring through ThreadLight Builder or ThreadLight Mirroring. They
 are not part of this customer package, and ThreadLight Components does not depend
 on ThreadLight Authoring.
+
+Customer and creator tools use the same ThreadLight UI package. VCC installs
+this dependency automatically; the generated fallback installer includes it too.
 
 ## Requirements
 

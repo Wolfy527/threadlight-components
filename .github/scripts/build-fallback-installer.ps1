@@ -6,7 +6,10 @@ param(
     [string] $OutputDirectory = ".artifacts/fallback",
 
     [Parameter(Mandatory = $false)]
-    [string] $ProjectInstallerRoot = ""
+    [string] $ProjectInstallerRoot = "",
+
+    [Parameter(Mandatory = $false)]
+    [string] $UiPackageRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -190,7 +193,7 @@ function Copy-PackageContent {
         "Editor/Threadlight.Components.Support.Editor.asmdef",
         "Editor/Threadlight.Components.Support.Editor.asmdef.meta"
     )
-    $includedDirectories = @("Runtime")
+    $includedDirectories = @("Runtime", "Editor/LiveMirroring")
 
     Get-ChildItem -LiteralPath $Source -Recurse -File -Force |
         ForEach-Object {
@@ -305,6 +308,8 @@ function Test-FallbackPayload {
         )
         foreach ($requiredEntry in @(
             "package.json",
+            "SharedUI~/package.json",
+            "SharedUI~/Editor/Threadlight.EditorUI.asmdef",
             "Runtime/Threadlight.Components.asmdef",
             "Runtime/PrefabId.cs",
             "Runtime/GeneratedTargetMetadata.cs",
@@ -409,7 +414,61 @@ try {
     New-Item -ItemType Directory -Path $workingRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 
+    if ([string]::IsNullOrWhiteSpace($UiPackageRoot)) {
+        $siblingUi = Join-Path (Split-Path -Parent $root) "com.wolfyvr.threadlight.ui"
+        if (Test-Path -LiteralPath (Join-Path $siblingUi "package.json")) {
+            $UiPackageRoot = $siblingUi
+        }
+        else {
+            $UiPackageRoot = Join-Path $workingRoot "shared-ui-source"
+            $snapshot = Join-Path $root "Distribution~/ThreadlightUI.bytes"
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($snapshot)
+            try {
+                foreach ($entry in $archive.Entries) {
+                    $relative = $entry.FullName.Replace('\', '/')
+                    if ($relative.StartsWith('/') -or $relative.Contains('..') -or
+                        $relative.Contains(':') -or
+                        ($relative -notmatch '^Editor/' -and $relative -notin @(
+                            "package.json", "package.json.meta", "README.md", "README.md.meta",
+                            "LICENSE.md", "LICENSE.md.meta", "Editor.meta",
+                            "Threadlight Wordmark.png", "Threadlight Wordmark.png.meta",
+                            "Threadlight Compact Mark.png", "Threadlight Compact Mark.png.meta"))) {
+                        throw "The shared UI snapshot contains an unexpected path: $relative"
+                    }
+                }
+            }
+            finally { $archive.Dispose() }
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($snapshot, $UiPackageRoot)
+        }
+    }
+    $uiRoot = (Resolve-Path -LiteralPath $UiPackageRoot).Path
+    $uiManifest = Get-Content -LiteralPath (Join-Path $uiRoot "package.json") -Raw | ConvertFrom-Json
+    $uiAssembly = Get-Content -LiteralPath (Join-Path $uiRoot "Editor/Threadlight.EditorUI.asmdef") -Raw | ConvertFrom-Json
+    $uiAssemblyMeta = Get-Content -LiteralPath (Join-Path $uiRoot "Editor/Threadlight.EditorUI.asmdef.meta") -Raw
+    if ($uiManifest.name -ne "com.wolfyvr.threadlight.ui" -or $uiManifest.version -notmatch '^1\.\d+\.\d+$' -or
+        $uiAssembly.name -ne "Threadlight.EditorUI" -or
+        $uiAssembly.references.Count -ne 0 -or
+        $uiAssemblyMeta -notmatch '(?m)^guid:\s*ba116ed4e1e542ca82aceac5f1314ca1\s*$') {
+        throw "The fallback requires the independent ThreadLight UI package with its stable assembly GUID."
+    }
+
     Copy-PackageContent -Source $root -Destination $fallbackStage
+
+    # Keep dependency sources hidden from Assets; the bootstrap installs one
+    # canonical embedded UPM package before exposing the Components fallback.
+    $sharedUiStage = Join-Path $fallbackStage "SharedUI~"
+    New-Item -ItemType Directory -Path $sharedUiStage -Force | Out-Null
+    foreach ($entry in @("package.json", "package.json.meta", "README.md", "README.md.meta",
+        "LICENSE.md", "LICENSE.md.meta", "Editor", "Editor.meta",
+        "Threadlight Wordmark.png", "Threadlight Wordmark.png.meta",
+        "Threadlight Compact Mark.png", "Threadlight Compact Mark.png.meta")) {
+        $sourceEntry = Join-Path $uiRoot $entry
+        if (-not (Test-Path -LiteralPath $sourceEntry)) {
+            throw "ThreadLight UI payload is missing '$entry'."
+        }
+        Copy-Item -LiteralPath $sourceEntry -Destination $sharedUiStage -Recurse -Force
+    }
 
     $fallbackManifestPath = Join-Path $fallbackStage "package.json"
     $fallbackManifest =
