@@ -1,7 +1,7 @@
 {
   "name": "com.wolfyvr.threadlight.components",
   "displayName": "ThreadLight Components",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "compatibilityLineage": "82661455-d14d-4ad0-9fc9-759d9bdb485c",
   "compatibilityReleaseEpoch": 1,
   "unity": "2022.3",
@@ -12,7 +12,7 @@
   "license": "LicenseRef-Threadlight-Proprietary",
   "vpmDependencies": {
     "com.vrchat.avatars": ">=3.7.0 <4.0.0",
-    "com.wolfyvr.threadlight.ui": ">=1.0.0 <2.0.0"
+    "com.wolfyvr.threadlight.ui": ">=1.0.1 <2.0.0"
   },
   "legacyFolders": {
     "Assets\\Wolfy_527\\~ Supporting Files\\Scripts": "1a754f8d169daa9408e3740cfeeab3aa"
