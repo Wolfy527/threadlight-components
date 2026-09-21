@@ -8,11 +8,27 @@ $root = (Resolve-Path -LiteralPath $PackageRoot).Path
 $manifestPath = Join-Path $root "package.json"
 $templatePath = Join-Path $root `
     "Distribution~/ThreadlightComponentsBootstrap.cs.template"
-$legacyMigrationPath = Join-Path $root `
-    "Editor/LegacyScriptsFolderMigration.cs"
+$legacyMigrationSourceNames = @(
+    "LegacyScriptsFolderMigration.cs",
+    "LegacyScriptsFolderMigration.PackageRecovery.cs",
+    "LegacyScriptsFolderMigration.Migration.cs",
+    "LegacyScriptsFolderMigration.Identity.cs",
+    "LegacyScriptsFolderMigration.Scheduling.cs"
+)
 $sourceManifest = Get-Content -LiteralPath $manifestPath -Raw |
     ConvertFrom-Json
 $sourceVersion = [string] $sourceManifest.version
+$minimumSharedUiVersion = "1.0.2"
+$maximumSharedUiVersionExclusive = "2.0.0"
+$uiDependency = [string] $sourceManifest.vpmDependencies."com.wolfyvr.threadlight.ui"
+$templateSource = Get-Content -LiteralPath $templatePath -Raw
+if ($uiDependency -ne ">=$minimumSharedUiVersion <$maximumSharedUiVersionExclusive" -or
+    $templateSource -notmatch ('MinimumSharedUiVersion\s*=\s*"' +
+        [regex]::Escape($minimumSharedUiVersion) + '"') -or
+    $templateSource -notmatch ('MaximumSharedUiVersionExclusive\s*=\s*"' +
+        [regex]::Escape($maximumSharedUiVersionExclusive) + '"')) {
+    throw "Components manifest, bootstrap template, and fallback fixture UI ranges diverge."
+}
 $sourceLineage = [string] $sourceManifest.compatibilityLineage
 $sourceReleaseEpoch = [int] $sourceManifest.compatibilityReleaseEpoch
 if ($sourceVersion -notmatch '^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)') {
@@ -69,10 +85,12 @@ try {
     Write-Utf8NoBom `
         -Path (Join-Path $workingRoot "ThreadlightComponentsBootstrap.cs") `
         -Value $bootstrap
-    Copy-Item `
-        -LiteralPath $legacyMigrationPath `
-        -Destination (Join-Path $workingRoot "LegacyScriptsFolderMigration.cs") `
-        -Force
+    foreach ($sourceName in $legacyMigrationSourceNames) {
+        Copy-Item `
+            -LiteralPath (Join-Path $root ("Editor/" + $sourceName)) `
+            -Destination (Join-Path $workingRoot $sourceName) `
+            -Force
+    }
 
     Write-Utf8NoBom `
         -Path (Join-Path $workingRoot "UnityStubs.cs") `
@@ -178,6 +196,18 @@ namespace UnityEditor
         public static bool IsValidFolder(string path) => false;
         public static string AssetPathToGUID(string path) =>
             Guids.TryGetValue(path, out string guid) ? guid : "";
+        public static string GUIDToAssetPath(string guid)
+        {
+            foreach (KeyValuePair<string, string> entry in Guids)
+            {
+                if (string.Equals(
+                        entry.Value,
+                        guid,
+                        StringComparison.OrdinalIgnoreCase))
+                    return entry.Key;
+            }
+            return "";
+        }
         public static bool DeleteAsset(string path)
         {
             DeletedAssets.Add(path);
@@ -191,10 +221,15 @@ namespace UnityEditor
 
     public static class EditorUtility
     {
+        public static readonly List<string> Dialogs = new List<string>();
         public static bool DisplayDialog(
             string title,
             string message,
-            string ok) => true;
+            string ok)
+        {
+            Dialogs.Add(title + "\n" + message);
+            return true;
+        }
     }
 
     public static class SessionState
@@ -288,6 +323,8 @@ namespace UnityEditor.PackageManager
         }
 
         $outputAssembly = Join-Path $workingRoot "BootstrapCompile.dll"
+        $legacyMigrationCompilePaths = $legacyMigrationSourceNames |
+            ForEach-Object { Join-Path $workingRoot $_ }
         & $monoExecutable `
             $unityCsc.FullName `
             /nologo `
@@ -296,7 +333,7 @@ namespace UnityEditor.PackageManager
             "/out:$outputAssembly" `
             "/reference:$compressionReference" `
             (Join-Path $workingRoot "ThreadlightComponentsBootstrap.cs") `
-            (Join-Path $workingRoot "LegacyScriptsFolderMigration.cs") `
+            $legacyMigrationCompilePaths `
             (Join-Path $workingRoot "UnityStubs.cs")
     }
 
@@ -334,6 +371,10 @@ namespace UnityEditor.PackageManager
 
     $privateBuilder = Join-Path $matrixPackages "com.wolfyvr.threadlight.builder"
     New-Item -ItemType Directory -Path $privateBuilder -Force | Out-Null
+    $privateBuilderPackage = [UnityEditor.PackageManager.PackageInfo]::new()
+    $privateBuilderPackage.name = "com.wolfyvr.threadlight.builder"
+    [UnityEditor.PackageManager.PackageInfo]::RegisteredPackages =
+        [UnityEditor.PackageManager.PackageInfo[]] @($privateBuilderPackage)
     if (-not (& $invoke $matrixProject)) {
         throw "Fallback payload was not preserved for the private Builder."
     }
@@ -343,9 +384,15 @@ namespace UnityEditor.PackageManager
         $matrixPackages `
         "com.wolfyvr.threadlight.mirroring"
     New-Item -ItemType Directory -Path $lightweightBuilder -Force | Out-Null
+    $lightweightBuilderPackage = [UnityEditor.PackageManager.PackageInfo]::new()
+    $lightweightBuilderPackage.name = "com.wolfyvr.threadlight.mirroring"
+    [UnityEditor.PackageManager.PackageInfo]::RegisteredPackages =
+        [UnityEditor.PackageManager.PackageInfo[]] @($lightweightBuilderPackage)
     if (-not (& $invoke $matrixProject)) {
         throw "Fallback payload was not preserved for Threadlight Mirroring."
     }
+    [UnityEditor.PackageManager.PackageInfo]::RegisteredPackages =
+        [UnityEditor.PackageManager.PackageInfo[]] @()
 
     $handleImportedAssets = $migrationType.GetMethod(
         "HandleImportedAssets",
@@ -680,6 +727,7 @@ namespace UnityEditor.PackageManager
         [UnityEngine.Debug]::Messages.Clear()
         [UnityEngine.Debug]::Errors.Clear()
         [UnityEngine.Debug]::Warnings.Clear()
+        [UnityEditor.EditorUtility]::Dialogs.Clear()
         foreach ($fieldName in @("running", "cleanupScheduled", "waitingForSharedUi")) {
             $bootstrapType.GetField(
                 $fieldName,
@@ -698,12 +746,16 @@ namespace UnityEditor.PackageManager
         param(
             [Parameter(Mandatory = $true)]
             [string] $Name,
-            [switch] $WithoutResolvedUi
+            [switch] $WithoutResolvedUi,
+            [switch] $WithoutSdk,
+            [string] $UiVersion = "1.0.2",
+            [string] $SdkVersion = "3.7.0",
+            [string] $InstallerRelativePath =
+                "Assets/Threadlight/Components/Temp/Threadlight Components Installer"
         )
         $project = Join-Path $workingRoot $Name
         $assets = Join-Path $project "Assets"
-        $installer = Join-Path $assets `
-            "Threadlight/Components/Temp/Threadlight Components Installer"
+        $installer = Join-Path $project $InstallerRelativePath
         $payload = Join-Path $installer "ThreadlightComponentsFallback.bytes"
         $payloadSource = Join-Path $project "payload-source"
         New-Item -ItemType Directory -Path $installer -Force | Out-Null
@@ -717,7 +769,8 @@ namespace UnityEditor.PackageManager
         Write-Utf8NoBom `
             -Path (Join-Path $payloadSource "package.json") `
             -Value $payloadManifest
-        $uiManifest = '{"name":"com.wolfyvr.threadlight.ui","version":"1.0.0"}'
+        $uiManifest = ('{"name":"com.wolfyvr.threadlight.ui","version":"' +
+            $UiVersion + '"}')
         $stagedUi = Join-Path $payloadSource "SharedUI~"
         New-Item -ItemType Directory -Path $stagedUi -Force | Out-Null
         Write-Utf8NoBom -Path (Join-Path $stagedUi "package.json") -Value $uiManifest
@@ -725,6 +778,15 @@ namespace UnityEditor.PackageManager
             $resolvedUi = Join-Path $project "Packages/com.wolfyvr.threadlight.ui"
             New-Item -ItemType Directory -Path $resolvedUi -Force | Out-Null
             Write-Utf8NoBom -Path (Join-Path $resolvedUi "package.json") -Value $uiManifest
+        }
+        if (-not $WithoutSdk) {
+            $resolvedSdk = Join-Path $project "Packages/com.vrchat.avatars"
+            New-Item -ItemType Directory -Path $resolvedSdk -Force | Out-Null
+            $sdkManifest = ('{"name":"com.vrchat.avatars","version":"' +
+                $SdkVersion + '"}')
+            Write-Utf8NoBom `
+                -Path (Join-Path $resolvedSdk "package.json") `
+                -Value $sdkManifest
         }
         $payloadScripts = [ordered] @{
             "Runtime/LiveMirroringSystem.cs" =
@@ -748,6 +810,13 @@ namespace UnityEditor.PackageManager
             -Path (Join-Path $payloadSource "*") `
             -DestinationPath ($payload + ".zip")
         Move-Item -LiteralPath ($payload + ".zip") -Destination $payload
+        Write-Utf8NoBom `
+            -Path (Join-Path $installer "Threadlight Components Bootstrapper.marker") `
+            -Value "Threadlight Components temporary export bootstrapper"
+        $payloadAssetPath = ($InstallerRelativePath.TrimEnd('/') +
+            "/ThreadlightComponentsFallback.bytes").Replace('\\', '/')
+        [UnityEditor.AssetDatabase]::Guids[$payloadAssetPath] =
+            "33bd79b26cc644e4896285530a240b2b"
         return $project
     }
 
@@ -779,6 +848,145 @@ namespace UnityEditor.PackageManager
         (Get-Content (Join-Path $unknownUiRoot "creator.txt") -Raw) -ne "preserve me" -or
         (Test-Path (Join-Path $unknownUiScenario "Assets/Threadlight/Components/Fallback"))) {
         throw "An unrecognized UI destination was not preserved and refused."
+    }
+
+    function Invoke-QueuedDelayCalls {
+        $callbacks = [UnityEditor.EditorApplication]::delayCall
+        [UnityEditor.EditorApplication]::delayCall = $null
+        if ($null -ne $callbacks) {
+            $callbacks.Invoke()
+        }
+    }
+
+    function Assert-DependencyScenario {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string] $Name,
+            [string] $UiVersion = "1.0.2",
+            [string] $SdkVersion = "3.7.0",
+            [switch] $WithoutSdk,
+            [Parameter(Mandatory = $true)]
+            [bool] $ShouldInstall
+        )
+
+        Reset-BootstrapState
+        $scenario = New-FallbackScenario `
+            -Name $Name `
+            -UiVersion $UiVersion `
+            -SdkVersion $SdkVersion `
+            -WithoutSdk:$WithoutSdk
+        [UnityEngine.Application]::dataPath = Join-Path $scenario "Assets"
+        $bootstrapRun.Invoke($null, @())
+        $fallback = Join-Path $scenario "Assets/Threadlight/Components/Fallback"
+        if ((Test-Path -LiteralPath $fallback -PathType Container) -ne
+            $ShouldInstall) {
+            throw (
+                "Dependency scenario '$Name' install result was unexpected. " +
+                "Errors: " +
+                ([string]::Join(" | ", [UnityEngine.Debug]::Errors)))
+        }
+        if (-not $ShouldInstall) {
+            $bootstrapRun.Invoke($null, @())
+            Invoke-QueuedDelayCalls
+            if ([UnityEngine.Debug]::Errors.Count -eq 0 -or
+                [UnityEditor.EditorUtility]::Dialogs.Count -ne 1) {
+                throw (
+                    "Dependency scenario '$Name' did not show one deduplicated " +
+                    "human-facing failure. Dialogs: " +
+                    [UnityEditor.EditorUtility]::Dialogs.Count)
+            }
+        }
+    }
+
+    Assert-DependencyScenario `
+        -Name "ui-below-minimum" `
+        -UiVersion "1.0.1" `
+        -ShouldInstall $false
+    Assert-DependencyScenario `
+        -Name "ui-minimum" `
+        -UiVersion "1.0.2" `
+        -ShouldInstall $true
+    Assert-DependencyScenario `
+        -Name "ui-current-major" `
+        -UiVersion "1.9.4" `
+        -ShouldInstall $true
+    Assert-DependencyScenario `
+        -Name "ui-next-major" `
+        -UiVersion "2.0.0" `
+        -ShouldInstall $false
+    Assert-DependencyScenario `
+        -Name "sdk-absent" `
+        -WithoutSdk `
+        -ShouldInstall $false
+    Assert-DependencyScenario `
+        -Name "sdk-below-minimum" `
+        -SdkVersion "3.6.2" `
+        -ShouldInstall $false
+    Assert-DependencyScenario `
+        -Name "sdk-minimum" `
+        -SdkVersion "3.7.0" `
+        -ShouldInstall $true
+    Assert-DependencyScenario `
+        -Name "sdk-current-major" `
+        -SdkVersion "3.9.9" `
+        -ShouldInstall $true
+    Assert-DependencyScenario `
+        -Name "sdk-next-major" `
+        -SdkVersion "4.0.0" `
+        -ShouldInstall $false
+
+    Reset-BootstrapState
+    $movedScenario = New-FallbackScenario `
+        -Name "moved-installer" `
+        -InstallerRelativePath "Assets/Creator/Moved ThreadLight Installer"
+    [UnityEngine.Application]::dataPath = Join-Path $movedScenario "Assets"
+    $bootstrapRun.Invoke($null, @())
+    if (-not (Test-Path -LiteralPath (Join-Path $movedScenario `
+            "Assets/Threadlight/Components/Fallback") -PathType Container)) {
+        throw "A moved installer folder did not resolve its payload by GUID."
+    }
+
+    Reset-BootstrapState
+    $missingPayloadScenario = New-FallbackScenario -Name "missing-payload"
+    $missingPayload = Join-Path $missingPayloadScenario `
+        "Assets/Threadlight/Components/Temp/Threadlight Components Installer/ThreadlightComponentsFallback.bytes"
+    Remove-Item -LiteralPath $missingPayload -Force
+    [UnityEngine.Application]::dataPath = Join-Path $missingPayloadScenario "Assets"
+    $bootstrapRun.Invoke($null, @())
+    $bootstrapRun.Invoke($null, @())
+    Invoke-QueuedDelayCalls
+    if ([UnityEditor.EditorUtility]::Dialogs.Count -ne 1 -or
+        (Test-Path -LiteralPath (Join-Path $missingPayloadScenario `
+            "Assets/Threadlight/Components/Fallback"))) {
+        throw "A missing payload did not fail closed with one human-facing message."
+    }
+
+    Reset-BootstrapState
+    $conflictingPayloadScenario = New-FallbackScenario -Name "conflicting-payload"
+    $conflictingMarker = Join-Path $conflictingPayloadScenario `
+        "Assets/Threadlight/Components/Temp/Threadlight Components Installer/Threadlight Components Bootstrapper.marker"
+    Write-Utf8NoBom -Path $conflictingMarker -Value "creator content"
+    [UnityEngine.Application]::dataPath = Join-Path $conflictingPayloadScenario "Assets"
+    $bootstrapRun.Invoke($null, @())
+    Invoke-QueuedDelayCalls
+    if ([UnityEditor.EditorUtility]::Dialogs.Count -ne 1 -or
+        (Get-Content -LiteralPath $conflictingMarker -Raw).Trim() -ne
+            "creator content") {
+        throw "A conflicting payload marker was not preserved and reported."
+    }
+
+    Reset-BootstrapState
+    $corruptPayloadScenario = New-FallbackScenario -Name "corrupt-payload"
+    $corruptPayload = Join-Path $corruptPayloadScenario `
+        "Assets/Threadlight/Components/Temp/Threadlight Components Installer/ThreadlightComponentsFallback.bytes"
+    Write-Utf8NoBom -Path $corruptPayload -Value "not a zip payload"
+    [UnityEngine.Application]::dataPath = Join-Path $corruptPayloadScenario "Assets"
+    $bootstrapRun.Invoke($null, @())
+    Invoke-QueuedDelayCalls
+    if ([UnityEditor.EditorUtility]::Dialogs.Count -ne 1 -or
+        (Test-Path -LiteralPath (Join-Path $corruptPayloadScenario `
+            "Assets/Threadlight/Components/Fallback"))) {
+        throw "A corrupt payload did not fail closed with a human-facing message."
     }
 
     function Set-CompatibleFallback {
@@ -1058,6 +1266,41 @@ namespace UnityEditor.PackageManager
         throw "Newer compatible fallback content was downgraded."
     }
 
+    foreach ($incompatibleCase in @(
+            @{ Name = "fallback-incompatible-equal"; Version = $sourceVersion },
+            @{ Name = "fallback-incompatible-older"; Version = $previousFallbackVersion },
+            @{ Name = "fallback-incompatible-newer"; Version = $newerFallbackVersion }
+        )) {
+        Reset-BootstrapState
+        $incompatibleScenario = New-FallbackScenario -Name $incompatibleCase.Name
+        $incompatibleFallback = Set-CompatibleFallback `
+            -Project $incompatibleScenario `
+            -Version $incompatibleCase.Version `
+            -WithSentinel
+        $incompatibleMeta = Join-Path `
+            $incompatibleFallback `
+            "Runtime/LiveMirroringSystem.cs.meta"
+        Write-Utf8NoBom `
+            -Path $incompatibleMeta `
+            -Value "guid: 00000000000000000000000000000000"
+        $sentinelPath = Join-Path $incompatibleFallback "creator-sentinel.txt"
+        $sentinelBefore = Get-Content -LiteralPath $sentinelPath -Raw
+        [UnityEngine.Application]::dataPath = Join-Path $incompatibleScenario "Assets"
+        $bootstrapRun.Invoke($null, @())
+        Invoke-QueuedDelayCalls
+        Assert-FallbackVersion `
+            -FallbackRoot $incompatibleFallback `
+            -ExpectedVersion $incompatibleCase.Version
+        if ((Get-Content -LiteralPath $sentinelPath -Raw) -ne $sentinelBefore -or
+            (Get-Content -LiteralPath $incompatibleMeta -Raw).Trim() -ne
+                "guid: 00000000000000000000000000000000" -or
+            [UnityEditor.EditorUtility]::Dialogs.Count -ne 1) {
+            throw (
+                "A fallback with incompatible compatibility " +
+                "GUIDs was changed or did not produce one failure message.")
+        }
+    }
+
     Reset-BootstrapState
     $managedScenario = New-FallbackScenario -Name "managed-vpm"
     [UnityEngine.Application]::dataPath = Join-Path $managedScenario "Assets"
@@ -1255,6 +1498,8 @@ namespace UnityEditor.PackageManager
 
     Write-Host (
         "Shared UI resolution ordering and unknown destination preservation, " +
+        "UI and VRChat SDK version boundaries, moved/missing/corrupt/conflicting " +
+        "installer handling, deduplicated user guidance, " +
         "semantic-version ordering, reverse-import migration, fallback install, " +
         "relocated-script migration, " +
         "upgrade, equal/newer " +

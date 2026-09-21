@@ -53,6 +53,16 @@ public abstract class AuthoringOnlyComponent : MonoBehaviour
 
         playModeRemovalQueued = true;
 
+        GameObject cleanupRoot = transform.root.gameObject;
+        if (!AuthoringBuildCleaner.CanStripAuthoringComponentsFrom(
+                cleanupRoot,
+                out string failureMessage,
+                out Object failureContext))
+        {
+            Debug.LogError(failureMessage, failureContext);
+            return;
+        }
+
         AuthoringBuildCleaner.StripAuthoringComponent(this);
     }
 
@@ -61,6 +71,15 @@ public abstract class AuthoringOnlyComponent : MonoBehaviour
 
     public virtual bool OnPreprocess()
     {
+        GameObject cleanupRoot = transform.root.gameObject;
+        if (!AuthoringBuildCleaner.CanStripAuthoringComponentsFrom(
+                cleanupRoot,
+                out string failureMessage,
+                out Object failureContext))
+        {
+            Debug.LogError(failureMessage, failureContext);
+            return false;
+        }
         AuthoringBuildCleaner.StripAuthoringComponent(this);
         return true;
     }

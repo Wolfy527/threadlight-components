@@ -5,12 +5,21 @@ using System.Collections.Generic;
 using Threadlight.Mirroring;
 using UnityEngine;
 
-internal enum CustomerMirroringPairStatus
+public enum CustomerMirroringPairStatus
 {
-    Accepted, Disabled, MissingPair, MissingReference, SelfReference, DuplicateTarget, Cycle
+    Accepted,
+    Disabled,
+    MissingPair,
+    MissingReference,
+    SameObject,
+    NestedTargets,
+    PersistentReference,
+    CrossSceneReference,
+    DuplicateTarget,
+    Cycle
 }
 
-internal readonly struct CustomerMirroringPairFact
+public readonly struct CustomerMirroringPairFact
 {
     public readonly int Index;
     public readonly LiveMirroringSystem.MirrorPair Pair;
@@ -149,14 +158,17 @@ internal sealed class CustomerMirroringEvaluationBuffers
         if (!system.ShouldMirrorOppositeTarget(pair))
             return CustomerMirroringPairStatus.Disabled;
         if (pair.sourceTarget == null || pair.mirroredTarget == null) return CustomerMirroringPairStatus.MissingReference;
-        if (pair.sourceTarget == pair.mirroredTarget ||
-            pair.sourceTarget.IsChildOf(pair.mirroredTarget) ||
-            pair.mirroredTarget.IsChildOf(pair.sourceTarget) ||
-            UnityEditor.EditorUtility.IsPersistent(pair.sourceTarget) ||
-            UnityEditor.EditorUtility.IsPersistent(pair.mirroredTarget) ||
-            pair.sourceTarget.gameObject.scene != system.gameObject.scene ||
+        if (pair.sourceTarget == pair.mirroredTarget)
+            return CustomerMirroringPairStatus.SameObject;
+        if (pair.sourceTarget.IsChildOf(pair.mirroredTarget) ||
+            pair.mirroredTarget.IsChildOf(pair.sourceTarget))
+            return CustomerMirroringPairStatus.NestedTargets;
+        if (UnityEditor.EditorUtility.IsPersistent(pair.sourceTarget) ||
+            UnityEditor.EditorUtility.IsPersistent(pair.mirroredTarget))
+            return CustomerMirroringPairStatus.PersistentReference;
+        if (pair.sourceTarget.gameObject.scene != system.gameObject.scene ||
             pair.mirroredTarget.gameObject.scene != system.gameObject.scene)
-            return CustomerMirroringPairStatus.SelfReference;
+            return CustomerMirroringPairStatus.CrossSceneReference;
         if (!controlled.Add(pair.mirroredTarget)) return CustomerMirroringPairStatus.DuplicateTarget;
         if (CanReach(pair.mirroredTarget, pair.sourceTarget))
         {
@@ -302,6 +314,13 @@ public static class CustomerLiveMirroringService
         system.transform.parent != null ? system.transform.parent : system.transform.root;
 
     internal static CustomerMirroringEvaluationBuffers AnalyzePairs(LiveMirroringSystem system) => Evaluate(system);
+
+    /// <summary>
+    /// Returns the ordered pair decisions used by customer mirroring. Editor UI
+    /// can explain paused pairs without repeating the topology rules.
+    /// </summary>
+    public static IReadOnlyList<CustomerMirroringPairFact> AnalyzePairFacts(
+        LiveMirroringSystem system) => AnalyzePairs(system).PairFacts.ToArray();
     internal static CustomerMirroringEvaluationBuffers Evaluate(LiveMirroringSystem system)
     {
         CustomerMirroringEvaluationBuffers evaluation = system.evaluationBuffers ??= new CustomerMirroringEvaluationBuffers();

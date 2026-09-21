@@ -17,6 +17,12 @@ internal static class ThreadlightComponentsBootstrap
 {
     private const string SharedUiPackageName = "com.wolfyvr.threadlight.ui";
     private const string SharedUiPackagePath = "Packages/com.wolfyvr.threadlight.ui";
+    private const string MinimumSharedUiVersion = "1.0.2";
+    private const string MaximumSharedUiVersionExclusive = "2.0.0";
+    private const string VrchatAvatarsPackageName = "com.vrchat.avatars";
+    private const string VrchatAvatarsPackagePath = "Packages/com.vrchat.avatars";
+    private const string MinimumVrchatAvatarsVersion = "3.7.0";
+    private const string MaximumVrchatAvatarsVersionExclusive = "4.0.0";
     private static bool waitingForSharedUi;
     private static double sharedUiWaitStarted;
 
@@ -43,6 +49,8 @@ internal static class ThreadlightComponentsBootstrap
         "Threadlight.Components.UpdateWarning.";
     private const string AuthoringRetentionSessionKeyPrefix =
         "Threadlight.Components.AuthoringExport.";
+    private const string InstallerFailureSessionKeyPrefix =
+        "Threadlight.Components.InstallerFailure.";
     private const string InstallerRoot =
         "@@INSTALLER_ROOT@@";
     private const string InstallerPayloadGuid =
@@ -100,6 +108,8 @@ internal static class ThreadlightComponentsBootstrap
     private static bool cleanupScheduled;
     private static string bundledVersion;
     private static int bundledReleaseEpoch;
+    private static string activeInstallerRoot = InstallerRoot;
+    private static string activePayloadPath = PayloadPath;
 
     static ThreadlightComponentsBootstrap()
     {
@@ -114,21 +124,28 @@ internal static class ThreadlightComponentsBootstrap
 
     private static void Run()
     {
-        if (running || !File.Exists(ToAbsolutePath(PayloadPath)))
+        if (running)
             return;
+
+        if (!TryResolveInstallerPayload(out string resolutionFailure))
+        {
+            if (!string.IsNullOrWhiteSpace(resolutionFailure))
+                ReportInstallerFailure(resolutionFailure, null);
+            return;
+        }
 
         running = true;
         try
         {
             bundledVersion = ReadBundledVersion(
-                ToAbsolutePath(PayloadPath), out bundledReleaseEpoch);
+                ToAbsolutePath(activePayloadPath), out bundledReleaseEpoch);
 
             // Authoring projects retain the export payload, but can still clean
             // up exact-GUID embedded script copies outside managed packages.
             bool keepInstallerForAuthoring =
                 File.Exists(AuthoringRetentionMarkerPath()) ||
                 SessionState.GetBool(
-                    AuthoringRetentionSessionKeyPrefix + InstallerRoot, false) ||
+                    AuthoringRetentionSessionKeyPrefix + activeInstallerRoot, false) ||
                 IsAssemblyLoaded("Threadlight.Authoring.Editor") ||
                 IsPackageRegistered(AuthoringPackageName) ||
                 IsPackageRegistered(BuilderPackageName) ||
@@ -175,20 +192,19 @@ internal static class ThreadlightComponentsBootstrap
                     ScheduleManagedPackageUpdateWarning(managedVersion);
 
                 Debug.Log(
-                    $"[Threadlight Components] VCC package {managedVersion} is already " +
-                    $"installed. Bundled fallback {bundledVersion} was not imported.");
+                    $"[ThreadLight Components] Version {managedVersion} is already " +
+                    $"installed through VCC. Bundled fallback {bundledVersion} was not imported.");
                 if (managedRelocatedScripts.Count > 0)
                 {
                     Debug.Log(
-                        $"[Threadlight Components] Moved " +
-                        $"{managedRelocatedScripts.Count} recognized embedded " +
-                        "script files into Legacy Package Backups. The VCC " +
-                        "package remains authoritative.");
+                        $"[ThreadLight Components] Moved " +
+                        $"{managedRelocatedScripts.Count} legacy installer script " +
+                        "files to Legacy Package Backups. The VCC package remains active.");
                 }
                 foreach (string backupPath in managedFallbackBackups)
                     Debug.Log(
-                        "[Threadlight Components] Moved a recognized fallback out " +
-                        "of Assets because the VCC package is authoritative:\n" +
+                        "[ThreadLight Components] Moved a verified fallback out " +
+                        "of Assets because the VCC package is active:\n" +
                         backupPath);
                 if (!keepInstallerForAuthoring)
                     ScheduleInstallerCleanup();
@@ -202,16 +218,17 @@ internal static class ThreadlightComponentsBootstrap
                 if (builderRelocatedScripts.Count > 0)
                 {
                     Debug.Log(
-                        $"[Threadlight Components] Moved " +
-                        $"{builderRelocatedScripts.Count} recognized embedded " +
-                        "script files into Legacy Package Backups. The export " +
-                        "bootstrapper was retained for the Builder.");
+                        $"[ThreadLight Components] Moved " +
+                        $"{builderRelocatedScripts.Count} legacy installer script " +
+                        "files to Legacy Package Backups. The export installer was " +
+                        "retained for ThreadLight Builder.");
                 }
                 return;
             }
 
             // Resolve the editor dependency in a separate import phase. Exposing
             // Components first would prevent compilation and strand this installer.
+            EnsureVrchatAvatarsAvailable();
             if (!EnsureSharedUiAvailable())
                 return;
 
@@ -226,8 +243,8 @@ internal static class ThreadlightComponentsBootstrap
             if (fallbackPathExists && !hasFallbackPackage)
             {
                 throw new InvalidDataException(
-                    $"The reserved fallback path already exists but is not a " +
-                    $"recognized Threadlight Components fallback:\n{FallbackPackagePath}");
+                    "ThreadLight could not use the fallback folder because it " +
+                    $"contains unrecognized files:\n{FallbackPackagePath}");
             }
 
             int installedVersionComparison = hasFallbackPackage
@@ -244,20 +261,18 @@ internal static class ThreadlightComponentsBootstrap
                 fallbackGuidIsCompatible)
             {
                 Debug.Log(
-                    $"[Threadlight Components] Fallback {installedVersion} is already " +
+                    $"[ThreadLight Components] Fallback {installedVersion} is already " +
                     $"installed. Bundled fallback {bundledVersion} was skipped.");
                 ScheduleInstallerCleanup();
                 return;
             }
 
-            if (hasFallbackPackage &&
-                installedVersionComparison > 0 &&
-                !fallbackGuidIsCompatible)
+            if (hasFallbackPackage && !fallbackGuidIsCompatible)
             {
                 throw new InvalidDataException(
-                    $"Fallback {installedVersion} has incompatible compatibility " +
-                    $"GUIDs. Bundled fallback {bundledVersion} is " +
-                    "older and will not overwrite it.");
+                    $"The existing fallback {installedVersion} could not be verified " +
+                    "as ThreadLight-owned, so it was left unchanged. Remove or " +
+                    "restore that fallback manually, then retry.");
             }
 
             InstallFallback(installedVersion, installedReleaseEpoch);
@@ -265,10 +280,7 @@ internal static class ThreadlightComponentsBootstrap
         }
         catch (Exception exception)
         {
-            Debug.LogError(
-                "[Threadlight Components] The bundled fallback could not be installed. " +
-                "The installer files were left in the project so the operation can " +
-                "be retried.\n" + exception);
+            ReportInstallerFailure(exception.Message, exception);
         }
         finally
         {
@@ -276,25 +288,155 @@ internal static class ThreadlightComponentsBootstrap
         }
     }
 
+    private static bool TryResolveInstallerPayload(out string failure)
+    {
+        failure = null;
+        activeInstallerRoot = InstallerRoot;
+        activePayloadPath = PayloadPath;
+
+        string guidPath = AssetDatabase.GUIDToAssetPath(InstallerPayloadGuid);
+        if (!string.IsNullOrWhiteSpace(guidPath))
+        {
+            activePayloadPath = guidPath.Replace('\\', '/');
+            if (!activePayloadPath.StartsWith(
+                    "Assets/",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                failure = "The installer files are outside this asset's Assets " +
+                    "folder. Re-export the asset or install ThreadLight " +
+                    "Components through VCC.";
+                return false;
+            }
+            activeInstallerRoot = Path.GetDirectoryName(activePayloadPath)
+                ?.Replace('\\', '/');
+            if (string.IsNullOrWhiteSpace(activeInstallerRoot))
+            {
+                failure = "The installer files are in an unsupported location. " +
+                    "Re-export the asset or install ThreadLight Components through VCC.";
+                return false;
+            }
+
+            return ValidateResolvedInstallerPayload(out failure);
+        }
+
+        bool expectedPayloadExists = File.Exists(ToAbsolutePath(PayloadPath));
+        bool expectedMarkerExists = File.Exists(ToAbsolutePath(OwnershipMarkerPath));
+        if (!expectedPayloadExists && !expectedMarkerExists)
+        {
+            // Successful fallback installs intentionally leave the now-inert
+            // source script behind after removing their payload and marker.
+            return false;
+        }
+
+        if (!expectedPayloadExists)
+        {
+            failure = "The asset's ThreadLight Components installer files are missing. " +
+                "Reimport or re-export the asset, or install ThreadLight Components " +
+                "through VCC. Project content was left unchanged.";
+            return false;
+        }
+
+        string expectedGuid = AssetDatabase.AssetPathToGUID(PayloadPath);
+        if (!string.Equals(
+                expectedGuid,
+                InstallerPayloadGuid,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            failure = "The asset's ThreadLight Components installer files conflict " +
+                "with another asset or are damaged. Reimport or re-export the asset, " +
+                "or install ThreadLight Components through VCC. Project content was " +
+                "left unchanged.";
+            return false;
+        }
+
+        return ValidateResolvedInstallerPayload(out failure);
+    }
+
+    private static bool ValidateResolvedInstallerPayload(out string failure)
+    {
+        failure = null;
+        string payloadAbsolutePath = ToAbsolutePath(activePayloadPath);
+        string markerAssetPath = activeInstallerRoot +
+            "/Threadlight Components Bootstrapper.marker";
+        string markerAbsolutePath = ToAbsolutePath(markerAssetPath);
+
+        if (!File.Exists(payloadAbsolutePath))
+        {
+            failure = "The asset's ThreadLight Components installer files are missing. " +
+                "Reimport or re-export the asset, or install ThreadLight Components " +
+                "through VCC. Project content was left unchanged.";
+            return false;
+        }
+
+        if (!File.Exists(markerAbsolutePath) ||
+            !string.Equals(
+                File.ReadAllText(markerAbsolutePath).Trim(),
+                OwnershipMarkerContents,
+                StringComparison.Ordinal))
+        {
+            failure = "The asset's ThreadLight Components installer files are in an " +
+                "unsupported location. Reimport or re-export the asset, or install " +
+                "ThreadLight Components through VCC. Project content was left unchanged.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static void ReportInstallerFailure(
+        string reason,
+        Exception exception)
+    {
+        string detail = string.IsNullOrWhiteSpace(reason)
+            ? "The bundled fallback could not be installed."
+            : reason.Trim();
+        Debug.LogError(
+            "[ThreadLight Components] ThreadLight Components could not be installed. " +
+            "The installer files were kept so the operation can be retried.\n" +
+            (exception == null ? detail : exception.ToString()));
+
+        string sessionKey = InstallerFailureSessionKeyPrefix + activePayloadPath;
+        if (SessionState.GetBool(sessionKey, false))
+            return;
+
+        SessionState.SetBool(sessionKey, true);
+        EditorApplication.delayCall += () => EditorUtility.DisplayDialog(
+            "ThreadLight Components Installation Failed",
+            "This asset could not install ThreadLight Components.\n\n" +
+            detail + "\n\nExisting packages and creator content were left unchanged.",
+            "OK");
+    }
+
     private static bool EnsureSharedUiAvailable()
     {
         bool registered = TryGetRegisteredPackageVersion(
             SharedUiPackageName, out string registeredVersion, out _);
-        if (registered && !registeredVersion.StartsWith("1.", StringComparison.Ordinal))
+        if (registered && !IsVersionInSupportedRange(
+                registeredVersion,
+                MinimumSharedUiVersion,
+                MaximumSharedUiVersionExclusive))
             throw new InvalidDataException(
-                "The registered ThreadLight UI version is incompatible with this " +
-                "fallback. Update ThreadLight Components through VCC.");
+                $"ThreadLight UI {registeredVersion} is installed. This asset " +
+                $"requires {MinimumSharedUiVersion} or later, but earlier than " +
+                $"{MaximumSharedUiVersionExclusive}. Update ThreadLight Components " +
+                "through VCC, then reopen Unity.");
         string target = ToAbsolutePath(SharedUiPackagePath);
         bool hasManifest = HasPackageManifest(
             SharedUiPackagePath, SharedUiPackageName, out string version);
         if (Directory.Exists(target) && !hasManifest)
             throw new InvalidDataException(
-                "The shared UI destination contains unrecognized content and was " +
-                "left unchanged:\n" + SharedUiPackagePath);
-        if (hasManifest && !version.StartsWith("1.", StringComparison.Ordinal))
+                "ThreadLight UI was not installed because its destination folder " +
+                "contains unrecognized files:\n" + SharedUiPackagePath +
+                "\nInstall ThreadLight Components through VCC.");
+        if (hasManifest && !IsVersionInSupportedRange(
+                version,
+                MinimumSharedUiVersion,
+                MaximumSharedUiVersionExclusive))
             throw new InvalidDataException(
-                "The installed ThreadLight UI version is incompatible with this " +
-                "fallback. Update ThreadLight Components through VCC.");
+                $"ThreadLight UI {version} is installed. This asset requires " +
+                $"{MinimumSharedUiVersion} or later, but earlier than " +
+                $"{MaximumSharedUiVersionExclusive}. Update ThreadLight Components " +
+                "through VCC, then reopen Unity.");
 
         if (registered || hasManifest)
         {
@@ -306,25 +448,29 @@ internal static class ThreadlightComponentsBootstrap
 
         if (IsAssemblyLoaded("Threadlight.EditorUI"))
             throw new InvalidDataException(
-                "An older Authoring installation already owns the ThreadLight UI " +
-                "assembly. Update Authoring before installing this fallback.");
+                "An older ThreadLight Authoring version is incompatible with this " +
+                "installer. Update Authoring, then retry.");
 
         string stagingRoot = Path.Combine(GetProjectRoot(), "Library", "Threadlight",
             "Shared UI Install", Guid.NewGuid().ToString("N"));
         try
         {
             Directory.CreateDirectory(stagingRoot);
-            ExtractPayload(ToAbsolutePath(PayloadPath), stagingRoot);
+            ExtractPayload(ToAbsolutePath(activePayloadPath), stagingRoot);
             string stagedUi = Path.Combine(stagingRoot, "SharedUI~");
             if (!HasPackageManifestAtAbsolutePath(
                     stagedUi, SharedUiPackageName, out string bundledUiVersion,
-                    out _) || !bundledUiVersion.StartsWith("1.", StringComparison.Ordinal))
+                    out _) || !IsVersionInSupportedRange(
+                        bundledUiVersion,
+                        MinimumSharedUiVersion,
+                        MaximumSharedUiVersionExclusive))
                 throw new InvalidDataException(
-                    "The bundled fallback does not contain a compatible shared UI package.");
+                    "The installer does not contain a compatible ThreadLight UI " +
+                    "package. Reimport or re-export the asset.");
             Directory.CreateDirectory(Path.GetDirectoryName(target));
             Directory.Move(stagedUi, target);
-            Debug.Log("[Threadlight Components] Installed the shared UI dependency. " +
-                "Components will be installed after Unity resolves it.");
+            Debug.Log("[ThreadLight Components] Installed ThreadLight UI. " +
+                "ThreadLight Components will install after Unity resolves the package.");
         }
         finally
         {
@@ -333,6 +479,34 @@ internal static class ThreadlightComponentsBootstrap
         }
         WaitForSharedUi();
         return false;
+    }
+
+    private static void EnsureVrchatAvatarsAvailable()
+    {
+        bool registered = TryGetRegisteredPackageVersion(
+            VrchatAvatarsPackageName, out string registeredVersion, out _);
+        bool hasManifest = HasPackageManifest(
+            VrchatAvatarsPackagePath,
+            VrchatAvatarsPackageName,
+            out string manifestVersion);
+
+        if (!registered && !hasManifest)
+            throw new InvalidDataException(
+                "VRChat Avatars SDK 3.7 or later, but earlier than 4.0, is required. " +
+                "Install or update it through VCC, then reopen Unity.");
+
+        string version = registered ? registeredVersion : manifestVersion;
+        if (!IsVersionInSupportedRange(
+                version,
+                MinimumVrchatAvatarsVersion,
+                MaximumVrchatAvatarsVersionExclusive))
+        {
+            throw new InvalidDataException(
+                $"VRChat Avatars SDK {version} is installed. This asset requires " +
+                $"{MinimumVrchatAvatarsVersion} or later, but earlier than " +
+                $"{MaximumVrchatAvatarsVersionExclusive}. Update the VRChat Avatars " +
+                "package through VCC, then reopen Unity.");
+        }
     }
 
     private static void WaitForSharedUi()
@@ -356,9 +530,11 @@ internal static class ThreadlightComponentsBootstrap
         if (EditorApplication.timeSinceStartup - sharedUiWaitStarted > 120)
         {
             waitingForSharedUi = false;
-            Debug.LogError("[Threadlight Components] Unity has not loaded the shared UI " +
-                "dependency. The fallback was not imported and the installer was " +
-                "retained. Resolve any package or compilation errors, then reopen Unity.");
+            ReportInstallerFailure(
+                "Unity did not load ThreadLight UI. Resolve package or compilation " +
+                "errors, then reopen Unity. Components was not installed, and the " +
+                "installer was kept.",
+                null);
             return;
         }
         EditorApplication.delayCall += ContinueAfterSharedUi;
@@ -378,7 +554,7 @@ internal static class ThreadlightComponentsBootstrap
         Directory.CreateDirectory(stagedPackage);
         try
         {
-            ExtractPayload(ToAbsolutePath(PayloadPath), stagedPackage);
+            ExtractPayload(ToAbsolutePath(activePayloadPath), stagedPackage);
             return MoveRelocatedOwnedScriptsOutOfAssets(
                 projectRoot,
                 stagedPackage,
@@ -416,9 +592,9 @@ internal static class ThreadlightComponentsBootstrap
             !HasCompatiblePackageGuids(assetPath))
         {
             throw new InvalidDataException(
-                "A managed Threadlight Components package is installed, but a " +
-                "folder at the fallback location is not a recognized compatible " +
-                "fallback. It was left unchanged:\n" + assetPath);
+                "A VCC-managed ThreadLight Components package is installed, but the " +
+                "fallback folder contains unrecognized files. The folder was left " +
+                "unchanged:\n" + assetPath);
         }
 
         string backupRoot = Path.Combine(
@@ -467,10 +643,12 @@ internal static class ThreadlightComponentsBootstrap
         Directory.CreateDirectory(stagedPackage);
         try
         {
-            ExtractPayload(ToAbsolutePath(PayloadPath), stagedPackage);
+            ExtractPayload(ToAbsolutePath(activePayloadPath), stagedPackage);
 
             if (string.IsNullOrWhiteSpace(targetParent))
-                throw new InvalidDataException("The fallback destination is invalid.");
+                throw new InvalidDataException(
+                    "The ThreadLight Components fallback destination is invalid. " +
+                    "Re-export the asset or install through VCC.");
             Directory.CreateDirectory(targetParent);
 
             if (!HasPackageManifestAtAbsolutePath(
@@ -480,7 +658,8 @@ internal static class ThreadlightComponentsBootstrap
                     out int payloadReleaseEpoch))
             {
                 throw new InvalidDataException(
-                    "The fallback payload does not contain the expected package.");
+                    "The installer is missing the ThreadLight Components package. " +
+                    "Reimport or re-export the asset.");
             }
 
             if (!string.Equals(
@@ -490,8 +669,8 @@ internal static class ThreadlightComponentsBootstrap
                 payloadReleaseEpoch != bundledReleaseEpoch)
             {
                 throw new InvalidDataException(
-                    $"Fallback payload version {payloadVersion} does not match " +
-                    $"installer version {bundledVersion}.");
+                    $"The installer contains ThreadLight Components {payloadVersion}, " +
+                    $"but expects {bundledVersion}. Reimport or re-export the asset.");
             }
 
             // Remove the known legacy source tree before the fallback package
@@ -533,27 +712,27 @@ internal static class ThreadlightComponentsBootstrap
             else
                 action = $"Updated from {installedVersion} to";
             Debug.Log(
-                $"[Threadlight Components] {action} fallback {bundledVersion}. " +
+                $"[ThreadLight Components] {action} fallback {bundledVersion}. " +
                 "Install the VCC package later for managed updates.");
 
             if (legacyMove != null)
             {
                 Debug.Log(
-                    "[Threadlight Components] Moved obsolete legacy scripts to:\n" +
+                    "[ThreadLight Components] Moved obsolete legacy scripts to:\n" +
                     legacyMove.BackupScriptsPath);
             }
 
             if (legacyGhostMaterialMove != null)
             {
                 Debug.Log(
-                    "[Threadlight Components] Moved the obsolete legacy Ghost Material " +
+                    "[ThreadLight Components] Moved the obsolete legacy Ghost Material " +
                     "to:\n" + legacyGhostMaterialMove.BackupAssetPath);
             }
 
             if (relocatedScriptMoves != null && relocatedScriptMoves.Count > 0)
             {
                 Debug.Log(
-                    $"[Threadlight Components] Moved {relocatedScriptMoves.Count} " +
+                    $"[ThreadLight Components] Moved {relocatedScriptMoves.Count} " +
                     "recognized relocated script files into Legacy Package " +
                     "Backups before installing the fallback.");
             }
@@ -573,7 +752,7 @@ internal static class ThreadlightComponentsBootstrap
             if (rollbackException != null)
             {
                 throw new AggregateException(
-                    "Fallback installation failed and could not be fully rolled back. " +
+                    "Installation failed, and some changes could not be restored. " +
                     $"Recovery files were kept at:\n{workingRoot}",
                     installationException,
                     rollbackException);
@@ -615,7 +794,7 @@ internal static class ThreadlightComponentsBootstrap
         string canonicalRoot = Path.GetFullPath(canonicalPackage)
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
             + Path.DirectorySeparatorChar;
-        string installerRoot = Path.GetFullPath(ToAbsolutePath(InstallerRoot))
+        string installerRoot = Path.GetFullPath(ToAbsolutePath(activeInstallerRoot))
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
             + Path.DirectorySeparatorChar;
         string backupRoot = null;
@@ -698,8 +877,8 @@ internal static class ThreadlightComponentsBootstrap
                 StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException(
-                "The legacy Scripts path resolved outside this project's Assets " +
-                "folder and was not moved.");
+                "Legacy scripts were not moved because their path is outside this " +
+                "project's Assets folder.");
         }
 
         string actualGuid = AssetDatabase.AssetPathToGUID(LegacyScriptsPath);
@@ -711,9 +890,9 @@ internal static class ThreadlightComponentsBootstrap
             !HasRecognizedLegacyScriptSignatures(normalizedLegacyPath))
         {
             throw new InvalidDataException(
-                "A Scripts folder exists at the old Threadlight Components location, " +
-                "but it does not match the known legacy package. It was left " +
-                "unchanged for safety.");
+                "A Scripts folder exists at the previous ThreadLight Components " +
+                "location, but ThreadLight could not verify that it belongs to the " +
+                "legacy package. It was left unchanged.");
         }
 
         string timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
@@ -853,8 +1032,8 @@ internal static class ThreadlightComponentsBootstrap
                 StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException(
-                "The legacy Ghost Material path resolved outside this project's " +
-                "Assets folder and was not moved.");
+                "The legacy Ghost Material was not moved because its path is outside " +
+                "this project's Assets folder.");
         }
 
         string actualGuid = AssetDatabase.AssetPathToGUID(
@@ -865,9 +1044,9 @@ internal static class ThreadlightComponentsBootstrap
                 StringComparison.OrdinalIgnoreCase))
         {
             Debug.LogWarning(
-                "[Threadlight Components] A Ghost Material exists at the old location, " +
-                "but it does not match the known legacy asset. It was left " +
-                "unchanged for safety.");
+                "[ThreadLight Components] A Ghost Material exists at the previous " +
+                "location, but ThreadLight could not verify that it belongs to the " +
+                "legacy package. It was left unchanged.");
             return null;
         }
 
@@ -980,7 +1159,7 @@ internal static class ThreadlightComponentsBootstrap
                         StringComparison.OrdinalIgnoreCase))
                 {
                     throw new InvalidDataException(
-                        $"Fallback payload contains an unsafe path: {entry.FullName}");
+                        $"The installer contains an unsafe file path: {entry.FullName}");
                 }
 
                 if (string.IsNullOrEmpty(entry.Name))
@@ -1016,7 +1195,7 @@ internal static class ThreadlightComponentsBootstrap
             if (manifestEntry == null || manifestEntry.Length > 65536)
             {
                 throw new InvalidDataException(
-                    "The fallback payload does not contain a valid package manifest.");
+                    "The installer does not contain a valid ThreadLight Components package.");
             }
 
             string manifestJson;
@@ -1036,7 +1215,7 @@ internal static class ThreadlightComponentsBootstrap
                 releaseEpoch < 1)
             {
                 throw new InvalidDataException(
-                    "The fallback payload package manifest is invalid.");
+                "The ThreadLight Components package information is invalid.");
             }
 
             return manifest.version;
@@ -1109,18 +1288,18 @@ internal static class ThreadlightComponentsBootstrap
 
         SessionState.SetBool(sessionKey, true);
         Debug.LogWarning(
-            $"[Threadlight Components] An imported asset requires Threadlight Components " +
+            $"[ThreadLight Components] An imported asset requires ThreadLight Components " +
             $"{bundledVersion} or newer, but VCC package {installedVersion} is " +
-            "installed. Update Threadlight Components through VCC.");
+            "installed. Update ThreadLight Components through VCC.");
 
         EditorApplication.delayCall += () =>
             EditorUtility.DisplayDialog(
-                "Threadlight Components Update Required",
-                "An imported asset requires a newer Threadlight Components package." +
+                "ThreadLight Components Update Required",
+                "An imported asset requires a newer ThreadLight Components package." +
                 $"\n\nInstalled VCC version: {installedVersion}" +
-                $"\nRequired version: {bundledVersion} or newer" +
+                $"\nRequired version: {bundledVersion} or later" +
                 "\n\nUpdate " +
-                "Threadlight Components through VCC before using this asset.",
+                "ThreadLight Components through VCC before using this asset.",
                 "OK");
     }
 
@@ -1288,7 +1467,7 @@ internal static class ThreadlightComponentsBootstrap
             !TryParseVersion(right, out SemanticVersion rightVersion))
         {
             throw new InvalidDataException(
-                $"Cannot compare Threadlight Components versions '{left}' and '{right}'.");
+                $"Cannot compare ThreadLight Components versions '{left}' and '{right}'.");
         }
 
         int coreComparison = leftVersion.Core.CompareTo(rightVersion.Core);
@@ -1298,6 +1477,32 @@ internal static class ThreadlightComponentsBootstrap
         return ComparePrerelease(
             leftVersion.Prerelease,
             rightVersion.Prerelease);
+    }
+
+    private static bool IsVersionInSupportedRange(
+        string value,
+        string minimumInclusive,
+        string maximumExclusive)
+    {
+        if (!TryParseVersion(value, out SemanticVersion candidate) ||
+            !TryParseVersion(minimumInclusive, out SemanticVersion minimum) ||
+            !TryParseVersion(maximumExclusive, out SemanticVersion maximum))
+        {
+            return false;
+        }
+
+        return CompareSemanticVersions(candidate, minimum) >= 0 &&
+            CompareSemanticVersions(candidate, maximum) < 0;
+    }
+
+    private static int CompareSemanticVersions(
+        SemanticVersion left,
+        SemanticVersion right)
+    {
+        int coreComparison = left.Core.CompareTo(right.Core);
+        return coreComparison != 0
+            ? coreComparison
+            : ComparePrerelease(left.Prerelease, right.Prerelease);
     }
 
     private static bool IsAssemblyLoaded(string assemblyName)
@@ -1373,8 +1578,8 @@ internal static class ThreadlightComponentsBootstrap
                 !TryParseVersion(package.version, out _))
             {
                 throw new InvalidDataException(
-                    "A registered package claims the Components compatibility " +
-                    "lineage but has an invalid release identity: " +
+                    "A registered ThreadLight Components package has invalid " +
+                    "version information: " +
                     package.resolvedPath);
             }
 
@@ -1389,8 +1594,8 @@ internal static class ThreadlightComponentsBootstrap
 
         if (matches > 1)
             Debug.LogWarning(
-                "[Threadlight Components] Multiple registered packages claim " +
-                "the same compatibility lineage. No fallback will be installed.");
+                "[ThreadLight Components] Multiple registered ThreadLight Components " +
+                "packages were found. No fallback was installed.");
 
         return version != null;
     }
@@ -1400,7 +1605,7 @@ internal static class ThreadlightComponentsBootstrap
         string token;
         using (SHA256 algorithm = SHA256.Create())
         {
-            byte[] hash = algorithm.ComputeHash(Encoding.UTF8.GetBytes(InstallerRoot));
+            byte[] hash = algorithm.ComputeHash(Encoding.UTF8.GetBytes(activeInstallerRoot));
             StringBuilder output = new StringBuilder(hash.Length * 2);
             foreach (byte value in hash)
                 output.Append(value.ToString("x2"));
@@ -1586,7 +1791,7 @@ internal static class ThreadlightComponentsBootstrap
         try
         {
             if (string.Equals(
-                    AssetDatabase.AssetPathToGUID(PayloadPath),
+                    AssetDatabase.AssetPathToGUID(activePayloadPath),
                     InstallerPayloadGuid,
                     StringComparison.OrdinalIgnoreCase))
             {
@@ -1594,14 +1799,25 @@ internal static class ThreadlightComponentsBootstrap
                 // to this source even when isCompiling is false. Keep the small
                 // inert bootstrap script; remove only its owned binary payload.
                 // Run returns immediately once that payload is absent.
-                AssetDatabase.DeleteAsset(PayloadPath);
+                AssetDatabase.DeleteAsset(activePayloadPath);
+                string markerAssetPath = activeInstallerRoot +
+                    "/Threadlight Components Bootstrapper.marker";
+                string markerAbsolutePath = ToAbsolutePath(markerAssetPath);
+                if (File.Exists(markerAbsolutePath) &&
+                    string.Equals(
+                        File.ReadAllText(markerAbsolutePath).Trim(),
+                        OwnershipMarkerContents,
+                        StringComparison.Ordinal))
+                {
+                    AssetDatabase.DeleteAsset(markerAssetPath);
+                }
             }
         }
         catch (Exception exception)
         {
             Debug.LogWarning(
-                "[Threadlight Components] The temporary fallback payload could not " +
-                "be removed. It is safe to leave in place.\n" + exception);
+                "[ThreadLight Components] Temporary installer files could not be " +
+                "removed. They are safe to leave in place.\n" + exception);
         }
     }
 
@@ -1635,7 +1851,7 @@ internal static class ThreadlightComponentsBootstrap
         DirectoryInfo parent = Directory.GetParent(Application.dataPath);
         if (parent == null)
             throw new DirectoryNotFoundException(
-                "Could not locate the Unity project root.");
+                "Unity project folder could not be located.");
 
         return parent.FullName;
     }

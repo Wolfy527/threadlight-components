@@ -64,7 +64,7 @@ namespace Threadlight.Components.Editor
         {
             if (EditorApplication.isPlayingOrWillChangePlaymode || system == null ||
                 !system.isActiveAndEnabled || !system.showScenePreview ||
-                system.previewSource == null || system.DataVersion < 0 || system.DataVersion > 3) return;
+                system.previewSource == null || !system.HasSupportedDataVersion) return;
             CollectTargets(system);
             if (targets.Count == 0) return;
             Material material = ResolveMaterial(system.previewMaterial);

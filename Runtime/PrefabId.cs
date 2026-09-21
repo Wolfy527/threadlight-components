@@ -34,7 +34,7 @@ public sealed class PrefabIdObjectReference
 
 [ExecuteAlways]
 [DisallowMultipleComponent]
-[AddComponentMenu("Wolfy/Prefab ID")]
+[AddComponentMenu("ThreadLight/Prefab ID")]
 /// <summary>
 /// Lightweight customer-side snapshot used to resume a prefab in Prefab
 /// Builder without distributing the Builder package itself.

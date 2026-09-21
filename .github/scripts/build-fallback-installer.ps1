@@ -28,8 +28,29 @@ if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $version = [string] $manifest.version
+$minimumSharedUiVersion = "1.0.2"
+$maximumSharedUiVersionExclusive = "2.0.0"
+$migrationSourceNames = @(
+    "LegacyScriptsFolderMigration.cs",
+    "LegacyScriptsFolderMigration.PackageRecovery.cs",
+    "LegacyScriptsFolderMigration.Migration.cs",
+    "LegacyScriptsFolderMigration.Identity.cs",
+    "LegacyScriptsFolderMigration.Scheduling.cs"
+)
 if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
     throw "Fallback releases require a stable x.y.z package version. Found '$version'."
+}
+
+$uiDependency = [string] $manifest.vpmDependencies."com.wolfyvr.threadlight.ui"
+if ($uiDependency -ne ">=$minimumSharedUiVersion <$maximumSharedUiVersionExclusive") {
+    throw "Components, bootstrap, and fallback UI dependency floors must agree. Found '$uiDependency'."
+}
+$templateSource = Get-Content -LiteralPath $templatePath -Raw
+if ($templateSource -notmatch ('MinimumSharedUiVersion\s*=\s*"' +
+        [regex]::Escape($minimumSharedUiVersion) + '"') -or
+    $templateSource -notmatch ('MaximumSharedUiVersionExclusive\s*=\s*"' +
+        [regex]::Escape($maximumSharedUiVersionExclusive) + '"')) {
+    throw "The bootstrap template UI range does not match the Components manifest."
 }
 
 $outputRoot = if ([System.IO.Path]::IsPathRooted($OutputDirectory)) {
@@ -56,12 +77,15 @@ $installerRootPath = "Assets/Threadlight/Components/Installer"
 $installerEditorPath = "$installerRootPath/Editor"
 $bootstrapAssetPath = "$installerEditorPath/ThreadlightComponentsBootstrap.cs"
 $payloadAssetPath = "$installerRootPath/ThreadlightComponentsFallback.bytes"
+$markerAssetPath = "$installerRootPath/Threadlight Components Bootstrapper.marker"
+$markerContents = "Threadlight Components temporary export bootstrapper"
 
 $assetGuids = [ordered]@{
     $installerRootPath = "d9ad23fa951c4b14bfc93923b7f36b0e"
     $installerEditorPath = "52eb624efef54c59b10fbc4e19fb337e"
     $bootstrapAssetPath = "fc608eef8f3f43e5a3579a8629d34a5f"
     $payloadAssetPath = "33bd79b26cc644e4896285530a240b2b"
+    $markerAssetPath = "82661455d14d4ad09fc9759d9bdb485c"
 }
 
 function Write-Utf8NoBom {
@@ -188,11 +212,13 @@ function Copy-PackageContent {
         "Ghost Material.mat",
         "Ghost Material.mat.meta",
         "Editor.meta",
-        "Editor/LegacyScriptsFolderMigration.cs",
-        "Editor/LegacyScriptsFolderMigration.cs.meta",
         "Editor/Threadlight.Components.Support.Editor.asmdef",
         "Editor/Threadlight.Components.Support.Editor.asmdef.meta"
     )
+    foreach ($migrationSourceName in $migrationSourceNames) {
+        $includedFiles += "Editor/$migrationSourceName"
+        $includedFiles += "Editor/$migrationSourceName.meta"
+    }
     $includedDirectories = @("Runtime", "Editor/LiveMirroring")
 
     Get-ChildItem -LiteralPath $Source -Recurse -File -Force |
@@ -296,7 +322,10 @@ function Test-FallbackPayload {
         [string] $Path,
 
         [Parameter(Mandatory = $true)]
-        [string] $ExpectedVersion
+        [string] $ExpectedVersion,
+
+        [Parameter(Mandatory = $true)]
+        [string] $SourceRoot
     )
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -306,7 +335,7 @@ function Test-FallbackPayload {
             $archive.Entries |
                 ForEach-Object { $_.FullName.Replace('\', '/') }
         )
-        foreach ($requiredEntry in @(
+        $requiredEntries = @(
             "package.json",
             "SharedUI~/package.json",
             "SharedUI~/Editor/Threadlight.EditorUI.asmdef",
@@ -318,18 +347,56 @@ function Test-FallbackPayload {
             "Runtime/AuthoringOnlyComponent.cs",
             "Runtime/LiveMirroringSystem.cs",
             "Runtime/LiveMirroringSystem.cs.meta",
-            "Editor/LegacyScriptsFolderMigration.cs",
             "Editor/Threadlight.Components.Support.Editor.asmdef"
-        )) {
+        )
+        foreach ($migrationSourceName in $migrationSourceNames) {
+            $requiredEntries += "Editor/$migrationSourceName"
+            $requiredEntries += "Editor/$migrationSourceName.meta"
+        }
+        foreach ($requiredEntry in $requiredEntries) {
             if ($normalizedEntries -notcontains $requiredEntry) {
                 throw "Fallback payload is missing '$requiredEntry'."
+            }
+        }
+
+        $actualMigrationEntries = @($normalizedEntries |
+            Where-Object { $_ -match '^Editor/LegacyScriptsFolderMigration.*\.cs(?:\.meta)?$' } |
+            Sort-Object)
+        $expectedMigrationEntries = @($migrationSourceNames | ForEach-Object {
+                "Editor/$_"
+                "Editor/$_.meta"
+            } | Sort-Object)
+        if ([string]::Join("`n", $actualMigrationEntries) -ne
+            [string]::Join("`n", $expectedMigrationEntries)) {
+            throw "Fallback payload migration source set does not exactly match the intended five source/meta pairs."
+        }
+
+        foreach ($relative in $expectedMigrationEntries) {
+            $entry = $archive.Entries | Where-Object {
+                $_.FullName.Replace('\', '/') -eq $relative
+            } | Select-Object -First 1
+            $entryStream = $entry.Open()
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $entryHash = [BitConverter]::ToString(
+                    $sha.ComputeHash($entryStream)).Replace('-', '').ToLowerInvariant()
+            }
+            finally {
+                $sha.Dispose()
+                $entryStream.Dispose()
+            }
+            $sourceHash = (Get-FileHash -LiteralPath (Join-Path $SourceRoot $relative) `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($entryHash -ne $sourceHash) {
+                throw "Fallback payload migration entry '$relative' differs from staged Components source."
             }
         }
 
         if ($normalizedEntries | Where-Object {
                 $_ -like ".github/*" -or
                 $_ -like ".vpm-listing/*" -or
-                $_ -like ".git/*"
+                $_ -like ".git/*" -or
+                $_ -match '(^|/)(Development|Library|debug|review)(/|$)'
             }) {
             throw "Fallback payload contains repository-only files."
         }
@@ -446,7 +513,10 @@ try {
     $uiManifest = Get-Content -LiteralPath (Join-Path $uiRoot "package.json") -Raw | ConvertFrom-Json
     $uiAssembly = Get-Content -LiteralPath (Join-Path $uiRoot "Editor/Threadlight.EditorUI.asmdef") -Raw | ConvertFrom-Json
     $uiAssemblyMeta = Get-Content -LiteralPath (Join-Path $uiRoot "Editor/Threadlight.EditorUI.asmdef.meta") -Raw
-    if ($uiManifest.name -ne "com.wolfyvr.threadlight.ui" -or $uiManifest.version -notmatch '^1\.\d+\.\d+$' -or
+    if ($uiManifest.name -ne "com.wolfyvr.threadlight.ui" -or
+        $uiManifest.version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or
+        [version] $uiManifest.version -lt [version] $minimumSharedUiVersion -or
+        [version] $uiManifest.version -ge [version] $maximumSharedUiVersionExclusive -or
         $uiAssembly.name -ne "Threadlight.EditorUI" -or
         $uiAssembly.references.Count -ne 0 -or
         $uiAssemblyMeta -notmatch '(?m)^guid:\s*ba116ed4e1e542ca82aceac5f1314ca1\s*$') {
@@ -498,7 +568,7 @@ try {
         -DestinationPath ($payloadPath + ".zip") `
         -CompressionLevel Optimal
     Move-Item -LiteralPath ($payloadPath + ".zip") -Destination $payloadPath
-    Test-FallbackPayload -Path $payloadPath -ExpectedVersion $version
+    Test-FallbackPayload -Path $payloadPath -ExpectedVersion $version -SourceRoot $root
     Copy-Item -LiteralPath $payloadPath -Destination $payloadOutput -Force
 
     $bootstrapSource = Get-Content -LiteralPath $templatePath -Raw
@@ -526,6 +596,9 @@ try {
         -LiteralPath $payloadPath `
         -Destination (Join-Path $installerStage $payloadAssetPath) `
         -Force
+    Write-Utf8NoBom `
+        -Path (Join-Path $installerStage $markerAssetPath) `
+        -Value ($markerContents + [System.Environment]::NewLine)
 
     Write-FolderMeta `
         -Path ($stagedInstallerRoot + ".meta") `
@@ -539,6 +612,9 @@ try {
     Write-TextMeta `
         -Path ((Join-Path $installerStage $payloadAssetPath) + ".meta") `
         -Guid $assetGuids[$payloadAssetPath]
+    Write-TextMeta `
+        -Path ((Join-Path $installerStage $markerAssetPath) + ".meta") `
+        -Guid $assetGuids[$markerAssetPath]
 
     Build-UnityPackage `
         -AssetsRoot $installerStage `
@@ -577,6 +653,10 @@ try {
                 Join-Path $projectInstallerPath "ThreadlightComponentsFallback.bytes"
             ) `
             -Force
+        Write-Utf8NoBom `
+            -Path (Join-Path $projectInstallerPath `
+                "Threadlight Components Bootstrapper.marker") `
+            -Value ($markerContents + [System.Environment]::NewLine)
 
         $projectBootstrapPath = Join-Path `
             $projectEditorPath `
@@ -586,7 +666,8 @@ try {
             "ThreadlightComponentsFallback.bytes"
         Test-FallbackPayload `
             -Path $projectPayloadPath `
-            -ExpectedVersion $version
+            -ExpectedVersion $version `
+            -SourceRoot $root
     }
 
     $payloadHash = (Get-FileHash -LiteralPath $payloadOutput -Algorithm SHA256).Hash

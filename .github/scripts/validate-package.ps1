@@ -73,12 +73,20 @@ if ($ExpectedName -eq "com.wolfyvr.threadlight.components") {
         "Ghost Material.mat.meta" = "4342400023fc9204e9fab7239dec44ef"
     }
 
-    $coreDependency = $manifest.vpmDependencies.PSObject.Properties[
-        "com.wolfyvr.threadlight.authoring"
-    ]
-    if ($null -ne $coreDependency) {
+    $coreDependencyLocations = @(
+        foreach ($propertyName in @("dependencies", "vpmDependencies")) {
+            $dependencySet = $manifest.PSObject.Properties[$propertyName]
+            if ($null -ne $dependencySet -and
+                $null -ne $dependencySet.Value -and
+                $null -ne $dependencySet.Value.PSObject.Properties[
+                    "com.wolfyvr.threadlight.authoring"]) {
+                $propertyName
+            }
+        }
+    )
+    if ($coreDependencyLocations.Count -gt 0) {
         $errors.Add(
-            "Threadlight Components must remain customer-only and must not depend on Threadlight Authoring."
+            "Threadlight Components must remain customer-only and must not depend on Threadlight Authoring through $($coreDependencyLocations -join ' or ')."
         )
     }
 
@@ -181,13 +189,19 @@ if ($ExpectedName -eq "com.wolfyvr.threadlight.components") {
             $_.FullName -notmatch '[\\/]\.git[\\/]' -and
             $_.FullName -notmatch '[\\/]\.github[\\/]'
         }
-    $allowedEditorSource = "Editor/LegacyScriptsFolderMigration.cs"
+    $allowedEditorSources = @(
+        "Editor/LegacyScriptsFolderMigration.cs",
+        "Editor/LegacyScriptsFolderMigration.PackageRecovery.cs",
+        "Editor/LegacyScriptsFolderMigration.Migration.cs",
+        "Editor/LegacyScriptsFolderMigration.Identity.cs",
+        "Editor/LegacyScriptsFolderMigration.Scheduling.cs"
+    )
     $componentSources | ForEach-Object {
         $relative = (Get-PackageRelativePath `
             -BasePath $root -FullPath $_.FullName).Replace('\', '/')
         if (-not $relative.StartsWith(
                 "Runtime/", [StringComparison]::Ordinal) -and
-            $relative -ne $allowedEditorSource -and
+            $relative -notin $allowedEditorSources -and
             -not $relative.StartsWith("Editor/LiveMirroring/", [StringComparison]::Ordinal)) {
             $errors.Add(
                 "Customer package source is outside Runtime, customer Live Mirroring, or legacy migration: '$relative'."
@@ -211,6 +225,25 @@ if ($ExpectedName -eq "com.wolfyvr.threadlight.components") {
                 )
             }
         }
+}
+
+$developmentArtifacts = Get-ChildItem -LiteralPath $root -Recurse -File -Force |
+    Where-Object {
+        $relative = (Get-PackageRelativePath -BasePath $root `
+            -FullPath $_.FullName).Replace('\', '/')
+        $segments = @($relative.Split('/'))
+        $topLevel = if ($segments.Count -gt 0) { $segments[0] } else { "" }
+        $ignored = $topLevel -in @(
+            ".git", ".github", ".vpm-listing", ".artifacts",
+            "Documentation~", "Samples~")
+        -not $ignored -and (
+            $relative -match "(?i)(^|/)(Tests?|Debug|Profiling|Benchmarks?|Fixtures?)(/|$)" -or
+            $_.Name -match "(?i)(SelfTests?|TestHarness|DebugMenu)"
+        )
+    }
+foreach ($artifact in $developmentArtifacts) {
+    $relative = Get-PackageRelativePath -BasePath $root -FullPath $artifact.FullName
+    $errors.Add("Development-only content must not ship: '$relative'.")
 }
 
 $ignoredRoots = @(

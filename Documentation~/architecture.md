@@ -22,6 +22,27 @@ ThreadLight Authoring or either Builder.
 - Keep managed-reference type names stable or provide an explicit migration.
 - Preserve data created by a newer package version without rewriting it.
 
+The fallback installer verifies ThreadLight UI `>=1.0.1 <2.0.0` and VRChat Avatars
+`>=3.7.0 <4.0.0` before exposing fallback assemblies. Stable GUID and ownership
+markers let it recover after its generated folder is moved, while registered VPM
+packages remain authoritative. Missing, corrupt, conflicting, or incompatible
+payloads retain rollback behavior and show one actionable editor message per
+session.
+An existing fallback whose compatibility GUID identity cannot be proven is left
+unchanged, regardless of its reported version. Automatic replacement is limited
+to recognized, GUID-compatible older fallbacks.
+
+The customer Live Mirroring inspector presents the ordered pair decisions already
+used by runtime evaluation. Same-object, nested, persistent-asset, cross-scene,
+duplicate-target, and cycle cases have distinct decisions and guidance while
+unsafe pairs remain paused. Damaged negative saved versions direct the user to an
+unaffected copy; data from a newer version directs them to update Components.
+
+Customer cleanup preflights the complete scene or upload root before removing any
+authoring state. It refuses prefab assets, the cleanup root itself, holders outside
+that root, missing scripts, and holders containing unrelated runtime components.
+Dedicated holders still preserve and reparent creator children before removal.
+
 ## Prefab ID
 
 `PrefabId` is the explicit handoff between a distributed customer prefab and

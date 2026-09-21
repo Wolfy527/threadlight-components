@@ -4,6 +4,13 @@ using System;
 using Threadlight.Authoring;
 using UnityEngine;
 
+public enum CustomerSavedDataVersionStatus
+{
+    Supported,
+    Damaged,
+    NewerThanSupported
+}
+
 /// <summary>
 /// Customer setup behavior and stable data for released Live Mirroring prefabs.
 /// Only stored target references are evaluated; creator generation remains in
@@ -61,7 +68,14 @@ public class LiveMirroringSystem : AuthoringOnlyComponent
 
     public void SetDataVersion(int version) => dataVersion = version;
 
-    public bool HasSupportedDataVersion => dataVersion >= 0 && dataVersion <= 3;
+    public CustomerSavedDataVersionStatus SavedDataVersionStatus =>
+        dataVersion < 0
+            ? CustomerSavedDataVersionStatus.Damaged
+            : dataVersion > 3
+                ? CustomerSavedDataVersionStatus.NewerThanSupported
+                : CustomerSavedDataVersionStatus.Supported;
+    public bool HasSupportedDataVersion =>
+        SavedDataVersionStatus == CustomerSavedDataVersionStatus.Supported;
     public bool ShouldCreateOppositeTarget(MirrorPair pair) => pair != null && pair.mirrorEnabled;
     public bool ShouldMirrorOppositeTarget(MirrorPair pair) => ShouldCreateOppositeTarget(pair);
 
