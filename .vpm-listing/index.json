@@ -7,6 +7,94 @@
   "packages": {
     "com.wolfyvr.threadlight.components": {
       "versions": {
+        "1.0.5": {
+          "name": "com.wolfyvr.threadlight.components",
+          "displayName": "ThreadLight Components",
+          "version": "1.0.5",
+          "compatibilityLineage": "82661455-d14d-4ad0-9fc9-759d9bdb485c",
+          "compatibilityReleaseEpoch": 1,
+          "unity": "2022.3",
+          "description": "Lightweight customer support components for ThreadLight prefabs.",
+          "documentationUrl": "https://github.com/Wolfy527/threadlight-components#readme",
+          "changelogUrl": "https://github.com/Wolfy527/threadlight-components/blob/main/CHANGELOG.md",
+          "licensesUrl": "https://github.com/Wolfy527/threadlight-components/blob/main/LICENSE.md",
+          "license": "LicenseRef-Threadlight-Proprietary",
+          "vpmDependencies": {
+            "com.vrchat.avatars": ">=3.7.0 <4.0.0",
+            "com.wolfyvr.threadlight.ui": ">=1.0.2 <2.0.0"
+          },
+          "legacyFolders": {
+            "Assets\\Wolfy_527\\~ Supporting Files\\Scripts": "1a754f8d169daa9408e3740cfeeab3aa"
+          },
+          "legacyFiles": {
+            "Assets\\Wolfy_527\\~ Supporting Files\\Ghost Material.mat": "4342400023fc9204e9fab7239dec44ef",
+            "Assets\\Threadlight\\Components\\Fallback\\Editor\\LegacyScriptsFolderMigration.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Editor\\LiveMirroring\\CustomerGhostPreview.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Editor\\LiveMirroring\\CustomerGhostPreview.shader": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Editor\\LiveMirroring\\CustomerLiveMirroringEditor.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Editor\\LiveMirroring\\Threadlight.Components.Mirroring.Editor.asmdef": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Editor\\Threadlight.Components.Support.Editor.asmdef": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Ghost Material.mat": null,
+            "Assets\\Threadlight\\Components\\Fallback\\LICENSE.md": null,
+            "Assets\\Threadlight\\Components\\Fallback\\README.md": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\AuthoringBuildCleaner.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\AuthoringOnlyComponent.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\CustomerLiveMirroringService.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\GeneratedEditorOnlyObject.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\GeneratedHierarchyMetadata.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\GeneratedTargetMetadata.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\LegacyImportCompilationBridge.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\LegacyLiveMirroringRuntime.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\LiveMirroringSystem.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\PrefabId.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\PrefabIdMigrationService.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\PrefabIdSnapshotUtility.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime\\Threadlight.Components.asmdef": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\Aurora Glow.png": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\Object Picker.png": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\Threadlight.EditorUI.asmdef": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightEditorElements.Aurora.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightEditorElements.Controls.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightEditorElements.ModuleGroups.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightEditorElements.PointerLight.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightEditorElements.Presentation.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightEditorElements.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightEditorElements.uss": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightEditorHighlight.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightEditorPreferences.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightEditorTheme.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightEditorTooltips.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightSerializedForm.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\LICENSE.md": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\README.md": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Threadlight Compact Mark.png": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Threadlight Wordmark.png": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\package.json": null,
+            "Assets\\Threadlight\\Components\\Fallback\\package.json": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Editor.meta": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Editor\\LiveMirroring.meta": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Runtime.meta": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor.meta": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Editor\\LegacyScriptsFolderMigration.Identity.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Editor\\LegacyScriptsFolderMigration.Migration.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Editor\\LegacyScriptsFolderMigration.PackageRecovery.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\Editor\\LegacyScriptsFolderMigration.Scheduling.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightColumnLayout.cs": null,
+            "Assets\\Threadlight\\Components\\Fallback\\SharedUI~\\Editor\\ThreadlightContinuousEditGesture.cs": null
+          },
+          "legacyPackages": [
+            "dev.avatar-tools.prop-components",
+            "com.wolfy527.prefab-components.fallback",
+            "com.wolfyvr.threadlight.components.fallback"
+          ],
+          "author": {
+            "name": "WolfyVR",
+            "email": "Wolfy527@users.noreply.github.com",
+            "url": "https://github.com/Wolfy527"
+          },
+          "url": "https://github.com/Wolfy527/threadlight-components/releases/download/v1.0.5/com.wolfyvr.threadlight.components-1.0.5.zip",
+          "zipSHA256": "c5c18ca93c7b56f1ae32b6f62a983f7810ab04693272ad1b5636a160d0dadf42"
+        },
         "1.0.4": {
           "name": "com.wolfyvr.threadlight.components",
           "displayName": "ThreadLight Components",
@@ -183,6 +271,21 @@
     },
     "com.wolfyvr.threadlight.ui": {
       "versions": {
+        "1.0.2": {
+          "name": "com.wolfyvr.threadlight.ui",
+          "displayName": "ThreadLight UI",
+          "version": "1.0.2",
+          "unity": "2022.3",
+          "description": "Shared editor theme and controls for ThreadLight customer and creator tools.",
+          "license": "LicenseRef-Threadlight-Proprietary",
+          "author": {
+            "name": "WolfyVR",
+            "email": "Wolfy527@users.noreply.github.com",
+            "url": "https://github.com/Wolfy527"
+          },
+          "url": "https://github.com/Wolfy527/threadlight-ui/releases/download/v1.0.2/com.wolfyvr.threadlight.ui-1.0.2.zip",
+          "zipSHA256": "3405df7bafd9c1bbc038a7a65bdea90ef613256d71e8e046eec4f17f7dd180ee"
+        },
         "1.0.1": {
           "name": "com.wolfyvr.threadlight.ui",
           "displayName": "ThreadLight UI",
